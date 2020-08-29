@@ -12,6 +12,10 @@ Created on Sat Aug 29 11:35:17 2020
 
 # 2.0 + 
 
+# August 29 PM:
+# try using covariance matrices, instead of precision
+# to avoid "singular matrix" issue with inversion
+
 #%%
 import numpy as np
 from numpy.linalg import inv
@@ -391,11 +395,13 @@ if __name__ == '__main__':
 # DP Gaussian mixture part
     
 # sample new components directly from the prior (base measure)
+    
+# 08/29/2020 PM update: each component is now (mu, covariance) instead!!!
 def sampleNewComp(Knew, muPrior, precisionPrior):
     '''
     Knew: number of new components to generate
-    muPrior: dictionary of prior mean and precision
-    precisionPrior: dictionary of prior df and invScale
+    muPrior: dictionary of prior mean and precision --> covariance
+    precisionPrior: dictionary of prior df and invScale AND Scale
     
     return: a list of NEW components
     '''
@@ -404,15 +410,20 @@ def sampleNewComp(Knew, muPrior, precisionPrior):
     if Knew == 0:
         return comps
     
-    muCov = inv(muPrior['precision'])
-    precisionScale = inv(precisionPrior['invScale'])
+    #muCov = inv(muPrior['precision'])
+    #precisionScale = inv(precisionPrior['invScale'])
+    
+    #muCov = muPrior['covariance']
+    #covarianceScale = precisionPrior['Scale']
     
     
     for k in range(Knew):
-        mu = rng.multivariate_normal(muPrior['mean'], muCov)
-        precision = wishart(precisionPrior['df'], precisionScale).rvs()
+        mu = rng.multivariate_normal(muPrior['mean'], muPrior['covariance'])
+        #precision = wishart(precisionPrior['df'], precisionScale).rvs()
+        covariance = invwishart(precisionPrior['df'], precisionPrior['Scale']).rvs()
         
-        comps.append((mu, precision))
+        #comps.append((mu, precision))
+        comps.append((mu, covariance))
     
     return comps
 
@@ -457,7 +468,9 @@ def initializeDPGMM(X, muPrior, precisionPrior, K=3, Kmax=10):
     
     components = list()
     for k in range(K):
-        components.append((centers[k,:], inv(np.cov(X[labels==k,:],rowvar=False))))
+        #components.append((centers[k,:], inv(np.cov(X[labels==k,:],rowvar=False))))
+        # use covariance instead!
+        components.append((centers[k,:], np.cov(X[labels==k,:],rowvar=False)))
     
     # re-order components by counts
     labels, components = relabel(labels, components, Kmax=K)
@@ -473,28 +486,32 @@ def initializeDPGMM(X, muPrior, precisionPrior, K=3, Kmax=10):
 # update Gaussian components
 # a): update mean and precision matrix conditioned on data points
 #     assigned with their component label
-def updateOneComponent(X, mu, precision, muPrior, precisionPrior):
+    
+# 08/29/20 PM: use covariance matrix instead!!
+def updateOneComponent(X, mu, covariance, muPrior, precisionPrior):
     '''
     X: (n,p) array of data
     mu: (p,1) array of current mean
-    precision: (p,p) matrix of current precision
-    muPrior: dictionary of prior mean and precision
-    precisionPrior: dictionary of prior df and invScale
+    covariance: (p,p) matrix of current covariance
+    muPrior: dictionary of prior mean and precision --> covariance
+    precisionPrior: dictionary of prior df and invScale AND Scale
     '''
     
     n = X.shape[0]
-    An_inv = inv(muPrior['precision'] + n * precision)
+    muPriorPrecision = inv(muPrior['covariance'])
+    precision = inv(covariance)
+    An_inv = inv(muPriorPrecision + n * precision)
     Xsum = np.sum(X, axis=0)
-    bn = muPrior['precision'].dot(muPrior['mean']) + precision.dot(Xsum)
+    bn = muPriorPrecision.dot(muPrior['mean']) + precision.dot(Xsum)
     
-    mu = multivariate_normal(An_inv.dot(bn), An_inv).rvs()
+    mu = multivariate_normal(An_inv.dot(bn), An_inv, allow_singular=True).rvs()
     
     S_mu = np.matmul((X-mu).T, X-mu)
     
-    precision = wishart(precisionPrior['df'] + n, 
-                        inv(precisionPrior['invScale'] + S_mu)).rvs()
+    covariance = invwishart(precisionPrior['df'] + n, 
+                           precisionPrior['invScale'] + S_mu).rvs()
     
-    return mu, precision
+    return mu, covariance
 
 
 # b): update all components
@@ -505,8 +522,8 @@ def updateGaussianComponents(X, Z, components, muPrior, precisionPrior):
     X: (n,p) array of data
     Z: length n, array like component indicator (only K distinct labels)
     components: list of (mu, precision) for Kmax Gaussian components
-    muPrior: dictionary of prior mean and precision
-    precisionPrior: dictionary of prior df and invScale
+    muPrior: dictionary of prior mean and precision-->covariance
+    precisionPrior: dictionary of prior df and invScale AND Scale
     
     Assume that
         - Z has K distinct values, 0,1,...,K-1
@@ -521,8 +538,8 @@ def updateGaussianComponents(X, Z, components, muPrior, precisionPrior):
     for k in range(K):
         subX = X[Z==k,:]
         if subX.shape[0] > 0:
-            mu, precision = components[k]
-            components[k] = updateOneComponent(subX, mu, precision, 
+            mu, covariance = components[k]
+            components[k] = updateOneComponent(subX, mu, covariance, 
                       muPrior, precisionPrior)
     
     if Kmax > K:
@@ -550,6 +567,9 @@ def updateComponentIndicator(X, weight, components):
     '''
     X: (n,p) array of data
     components: list of (mu, precision) for K Gaussian components
+    
+    09/29 change: each component is (mu, covariance) instead
+    
     (05/13 fix: use weights in indicator update! previous version was wrong)
     
     08/29 addtion: relabel the indicators and components by descending counts
@@ -560,8 +580,8 @@ def updateComponentIndicator(X, weight, components):
     logDens = np.empty((K,n))
     
     for k in range(K):
-        mu, precision = components[k]
-        MVN = multivariate_normal(mu, inv(precision))
+        mu, covariance = components[k]
+        MVN = multivariate_normal(mu, covariance, allow_singular=True)
         logDens[k,:] = MVN.logpdf(X) + np.log(weight[k])
 #        logProb = MVN.logpdf(X)
 #        if np.any(np.isnan(logProb)):
@@ -778,6 +798,8 @@ def evalDensity(X, weight, components, log=True):
     X: (n,p) array of data
     weight: length K vector of mixture weights
     components: list of (mu, precision) for K Gaussian components
+    ----> (08/29 change)
+    components: list of (mu, covariance) for K Gaussian components
     '''
     
     n = X.shape[0]
@@ -786,8 +808,8 @@ def evalDensity(X, weight, components, log=True):
     mix_dens = np.empty((n,K))
     
     for k in range(K):
-        mu, precision = components[k]
-        MVN = multivariate_normal(mu, inv(precision))
+        mu, covariance = components[k]
+        MVN = multivariate_normal(mu, covariance, allow_singular=True)
         mix_dens[:,k] = MVN.pdf(X)
         
     #print(mix_dens)
@@ -890,12 +912,20 @@ if __name__ == "__main__":
 
 #%%
 # functions to simulate data
+    
+# 08/29/20 change: each component is (mu, covariance) instead of (mu, precision)
 def simulateGMM(N, weight, components):
     comp_counts = np.random.multinomial(N, weight)
     data = None
     for k in range(len(weight)):
         if comp_counts[k] > 0:
-            data_k = np.random.multivariate_normal(components[k][0], inv(components[k][1]), comp_counts[k])
+            #data_k = np.random.multivariate_normal(components[k][0], inv(components[k][1]), 
+            #                                       comp_counts[k])
+            
+            
+            data_k = np.random.multivariate_normal(components[k][0], components[k][1], 
+                                                   comp_counts[k])
+            
             if data is None:
                 data = data_k
             else:
@@ -912,6 +942,7 @@ def simulateLatentPoissonGMM2(Settings):
         - 'muD', 'muNegD', 'muL': the score model means
         - 'gammaD', 'gammaL': the score model precisions (inverse variance)
         - 'componentsMF', 'componentsFM': length K list of GMM components (mean vector, precision matrix)
+          (08/29/20 change: (mu, covariance) pair instead)
         - 'weightMF', 'weightFM': mixture weight of GMM on each process
     '''
     

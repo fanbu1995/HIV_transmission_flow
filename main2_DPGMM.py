@@ -372,8 +372,19 @@ class LatentPoissonDPGMM2:
             suffix = param[-2:]
             weights = self.chains['weight'+suffix][s]
             
+            # get the relevant data
+            C = self.chains['C'][s]
+            
+            if suffix=='MF':
+                data = getPoints(self.E)[C%2==0,:]
+            else:
+                data = getPoints(self.E)[C%2==1,:][:,(1,0)]
+            
+            # get the min, max range
+            Amin = np.min(data); Amax = np.max(data)
+            
             # make density contour plot
-            Amin = 15.0; Amax = 50.0
+            #Amin = 15.0; Amax = 50.0
             x = np.linspace(Amin, Amax)
             y = np.linspace(Amin, Amax)
             X, Y = np.meshgrid(x, y)
@@ -385,12 +396,6 @@ class LatentPoissonDPGMM2:
             plt.contourf(X,Y,Z)
             
             # overlay with the predicted age-pair points
-            C = self.chains['C'][s]
-            
-            if suffix=='MF':
-                data = getPoints(self.E)[C==2,:]
-            else:
-                data = getPoints(self.E)[C==3,:][:,(1,0)]
             
             plt.scatter(data[:,0], data[:,1], c="black")
             
@@ -432,6 +437,8 @@ class LatentPoissonDPGMM2:
                 this_label = str(k)
                 plt.plot(chain[:,k],"-",label=this_label)
             #plt.legend(loc='upper right')
+            plt.xlabel('Samples')
+            plt.title('Traceplot of {}'.format(param))
             plt.legend()
             if savepath is not None:
                 plt.savefig(savepath)
@@ -449,6 +456,9 @@ class LatentPoissonDPGMM2:
             plt.plot(self.chains[param])
             if savepath is not None:
                 plt.savefig(savepath)
+            
+            plt.title('Traceplot of {}'.format(param))
+            plt.xlabel('Samples')
             plt.show()
             
         return
@@ -489,6 +499,7 @@ model = LatentPoissonDPGMM2(Priors = Pr, K=3, Kmax=10)
 #model.fit(E,L,D, samples=2000, burn=0, random_seed = 71)
 # for this one: one of the event sets will eventually get empty...
 
+#%%
 
 # =============================================================================
 # V1
@@ -509,30 +520,104 @@ model = LatentPoissonDPGMM2(Priors = Pr, K=3, Kmax=10)
 # # V2
 # ## Try another setting
 # ## MF and FM GMM different weights but same components
-Settings = {'N_MF': 80, 'N_FM': 70, 'N_MF0':20, 'N_FM0': 30, 
-            'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
-            'gammaL': 1, 'gammaD': 1, 
-            'weightMF': np.array([0.8, 0.1, 0.1]), 'weightFM': np.array([0.1, 0.8, 0.1]),
-            'componentsMF': [([40,40], np.diag([1/4,1/4])), ([25,25], np.diag([1/9,1/9])), 
-                             ([40,25], np.diag([1/4,1/9]))],
-            'componentsFM': [([40,40], np.diag([1/4,1/4])), ([25,25], np.diag([1/9,1/9])), 
-                             ([25,40], np.diag([1/9,1/4]))]}
-# =============================================================================
-
-# V3
-## Try yet another setting
-## MF and FM GMM different components too
 #Settings = {'N_MF': 80, 'N_FM': 70, 'N_MF0':20, 'N_FM0': 30, 
 #            'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
 #            'gammaL': 1, 'gammaD': 1, 
-#            'weightMF': np.array([0.6, 0.2, 0.2]), 'weightFM': np.array([0.6, 0.2, 0.2]),
-#            'componentsMF': [([40,40], np.diag([1/4,1/4])), ([30,20], np.diag([1/9,1/9])), 
-#                             ([25,25], np.diag([1/4,1/9]))],
-#            'componentsFM': [([20,40], np.diag([1/4,1/4])), ([25,45], np.diag([1/9,1/9])), 
+#            'weightMF': np.array([0.8, 0.1, 0.1]), 'weightFM': np.array([0.1, 0.8, 0.1]),
+#            'componentsMF': [([40,40], np.diag([1/4,1/4])), ([25,25], np.diag([1/9,1/9])), 
+#                             ([40,25], np.diag([1/4,1/9]))],
+#            'componentsFM': [([40,40], np.diag([1/4,1/4])), ([25,25], np.diag([1/9,1/9])), 
 #                             ([25,40], np.diag([1/9,1/4]))]}
+# =============================================================================
+
+# V3
+# Try yet another setting
+# MF and FM GMM different components too
+Settings = {'N_MF': 80, 'N_FM': 70, 'N_MF0':20, 'N_FM0': 30, 
+            'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
+            'gammaL': 1, 'gammaD': 1, 
+            'weightMF': np.array([0.6, 0.2, 0.2]), 'weightFM': np.array([0.6, 0.2, 0.2]),
+            'componentsMF': [([40,40], np.diag([1/4,1/4])), ([30,20], np.diag([1/9,1/9])), 
+                             ([25,25], np.diag([1/4,1/9]))],
+            'componentsFM': [([20,40], np.diag([1/4,1/4])), ([25,45], np.diag([1/9,1/9])), 
+                             ([25,40], np.diag([1/9,1/4]))]}
 
             
 
+#E, L, D = simulateLatentPoissonGMM2(Settings)
+#
+#E_MF = {i:a for i,a in E.items() if i in range(80)}
+#E_FM = {i:a[::-1] for i,a in E.items() if i in range(80,150)}
+#
+#
+## visualize a bit
+#X = getPoints(E)
+#plt.plot(X[:,0], X[:,1], "o")
+#plt.show()
+#
+#plt.plot(L,"o")
+#plt.show()
+#
+#plt.plot(D, "o")
+#plt.show()
+
+
+#%%
+
+# 08/29/20 PM change:
+# use covariance matrix instead of precision matrix
+
+Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
+      "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001,
+                'covariance': np.eye(2)*10000},
+      "precisionGMM": {'df': 2, 'invScale': np.eye(2), 'Scale': np.eye(2)},
+      "probs": np.ones(3), 
+      "gammaPP": {'n0': 1, 'b0': 0.02},
+      "eta": {'a': 1, 'b': 1},
+      "alpha": {'a': 2.0, 'b':3.0}}
+
+model = LatentPoissonDPGMM2(Priors = Pr, K=3, Kmax=10)
+
+
+# # V2
+# ## Try another setting
+# ## MF and FM GMM different weights but same components
+#Settings = {'N_MF': 80, 'N_FM': 70, 'N_MF0':20, 'N_FM0': 30, 
+#            'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
+#            'gammaL': 1, 'gammaD': 1, 
+#            'weightMF': np.array([0.8, 0.1, 0.1]), 'weightFM': np.array([0.1, 0.8, 0.1]),
+#            'componentsMF': [([40,40], np.diag([4,4])), ([25,25], np.diag([9,9])), 
+#                             ([40,25], np.diag([4,9]))],
+#            'componentsFM': [([40,40], np.diag([4,4])), ([25,25], np.diag([9,9])), 
+#                             ([25,40], np.diag([9,4]))]}
+            
+
+# V3
+# Try yet another setting
+# MF and FM GMM different components too
+Settings = {'N_MF': 80, 'N_FM': 70, 'N_MF0':20, 'N_FM0': 30, 
+            'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
+            'gammaL': 1, 'gammaD': 1, 
+            'weightMF': np.array([0.6, 0.2, 0.2]), 'weightFM': np.array([0.6, 0.2, 0.2]),
+            'componentsMF': [([40,40], np.diag([4,4])), ([30,20], np.diag([9,9])), 
+                             ([25,25], np.diag([4,9]))],
+            'componentsFM': [([20,40], np.diag([4,4])), ([25,45], np.diag([9,9])), 
+                             ([25,40], np.diag([9,4]))]}
+
+
+# V4
+# increase number of points
+Settings = {'N_MF': 160, 'N_FM': 120, 'N_MF0':40, 'N_FM0': 80, 
+            'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
+            'gammaL': 1, 'gammaD': 1, 
+            'weightMF': np.array([0.5, 0.4, 0.1]), 'weightFM': np.array([0.6, 0.2, 0.2]),
+            'componentsMF': [([40,40], np.diag([4,4])), ([30,20], np.diag([9,9])), 
+                             ([25,25], np.diag([4,9]))],
+            'componentsFM': [([20,40], np.diag([4,4])), ([25,45], np.diag([9,9])), 
+                             ([25,40], np.diag([9,4]))]}
+
+
+#%%
 E, L, D = simulateLatentPoissonGMM2(Settings)
 
 E_MF = {i:a for i,a in E.items() if i in range(80)}
@@ -552,13 +637,13 @@ plt.show()
 
 #%%
 # try to fit 
-model.fit(E, L, D, samples=5000, burn=1000, random_seed = 89, debugHack=False)
+model.fit(E, L, D, samples=3000, burn=500, random_seed = 73, debugHack=False)
 
 # plot number of points in each process
 model.plotChains('N_MF')
 model.plotChains('N_FM')
-model.plotChains('weightMF','weightMF_diffGMM.pdf')
-model.plotChains('weightFM','weightFM_diffGMM.pdf')
+model.plotChains('weightMF',savepath='weightMF_diffGMM.pdf')
+model.plotChains('weightFM',savepath='weightFM_diffGMM.pdf')
 model.plotChains('etaMF')
 model.plotChains('gammaMF')
 model.plotChains('muL')
@@ -575,3 +660,6 @@ model.plotChains('alpha_FM')
 
 ### Based on V3
 ### As long as the components are somewhat different, it works!
+
+model.plotChains('componentsFM', s=1000)
+model.plotChains('componentsMF', s=1000)

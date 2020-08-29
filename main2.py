@@ -425,6 +425,7 @@ plt.show()
 plt.plot(D, "o")
 plt.show()
 
+
 #%%
 # try to fit 
 model.fit(E, L, D, samples=2000, burn=0, random_seed = 89, debugHack=False)
