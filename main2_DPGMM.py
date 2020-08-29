@@ -12,11 +12,20 @@ Created on Sat Aug 29 13:32:17 2020
 
 #%%
 import os
-os.chdir('/Users/fan/Documents/Research_and_References/HIV_transmission_flow/')
+os.chdir('/Users/fan/Documents/Research_and_References/HIV_transmission_flow/HIV_transmission_flow')
 
 from copy import copy#, deepcopy
 
 import matplotlib.pyplot as plt
+
+# set ggplot-like style
+plt.style.use('ggplot')
+
+# to set it back to default
+#plt.style.use('default')
+
+# to see all styles
+# print(plt.style.available)
 
 #%%
 
@@ -93,11 +102,13 @@ class LatentPoissonDPGMM2:
 #        self.Z_0 = None # component indicator for the outside process
         self.alpha_MF = None # DP precision for MF surface mixture
         self.alpha_FM = None # DP precision for FM surface mixture
+        
         self.params_to_record = ['muL','muD', 'muNegD', 'gammaL', 'gammaD', 
                                  'N_MF', 'N_FM', 'gammaMF', 'gammaFM', 
                                  'componentsMF', 'weightMF',
                                  'componentsFM', 'weightFM',
-                                 'N_MF', 'N_FM', 'C', 'etaMF', 'etaFM']
+                                 'N_MF', 'N_FM', 'C', 'etaMF', 'etaFM',
+                                 'alpha_MF', 'alpha_FM']
         # log-likelihood
         #self.log-lik-terms = None # each pair's contribution to the log-likelihood
         self.log_lik = None # total log-likelihood
@@ -190,7 +201,7 @@ class LatentPoissonDPGMM2:
                  evalDLikelihood(self.D, [], indsall, self.muD, self.muNegD, self.gammaD) + 
                  logFM + np.log(self.etaFM))
         
-        self.C = np.apply_along_axis(lambda v: choice(range(4), replace=False, 
+        self.C = np.apply_along_axis(lambda v: rng.choice(range(4), replace=False, 
                                                       p=getProbVector(v)), 1, condProbs)
 
         
@@ -222,18 +233,32 @@ class LatentPoissonDPGMM2:
         # 1) scores
         self.L, inds, self.muL, self.gammaL = initializeLinkedScore(self.L, self.linkInitialThreshold)
         self.D, self.indsMF, self.indsFM, self.muD, self.muNegD, self.gammaD = initializeDirectScore(self.D, inds)
-        # 2) Gaussian components
+        # 2) Gaussian mixture components
+        
+        ## first: get some initial values of alpha...
+        self.alpha_MF, self.alpha_FM = rng.gamma(self.alphaPrior['a'], 1/self.alphaPrior['a'], size=2)
+        
         ## right now: only use "real" events to get initial estimates of the GMM stuff
         X = getPoints(self.E)
         X_MF = X[self.indsMF,:]; X_FM = X[self.indsFM,:][:,(1,0)]
-        self.componentsMF, self.Z_MF = initializeGMM(X_MF, self.K)
-        self.weightMF = updateMixtureWeight(self.Z_MF, self.weightPrior)
-        self.componentsFM, self.Z_FM = initializeGMM(X_FM, self.K)
-        self.weightFM = updateMixtureWeight(self.Z_FM, self.weightPrior)
+        
+        ## MF surface
+        self.componentsMF, self.Z_MF = initializeDPGMM(X_MF, self.muPrior, 
+                                                       self.precisionPrior, self.K, self.Kmax)
+        self.weightMF = updateMixtureWeight(self.Z_MF, self.alpha_MF, self.Kmax)
+        K_MF = len(np.unique(self.Z_MF))
+        self.alpha_MF = updateAlpha(K_MF, N, self.alpha_MF, self.alphaPrior)
+        
+        ## FM surface
+        self.componentsFM, self.Z_FM = initializeDPGMM(X_FM, self.muPrior, self.precisionPrior, 
+                                                       self.K, self.Kmax)
+        self.weightFM = updateMixtureWeight(self.Z_FM, self.alpha_FM, self.Kmax)
+        K_FM = len(np.unique(self.Z_FM))
+        self.alpha_FM = updateAlpha(K_FM, N, self.alpha_FM, self.alphaPrior)
         # 3) get C
         ## right now: 
         ## randomly assign all outsiders to either C=1 or C=0 to start with
-        self.C = choice(range(2), N)
+        self.C = rng.choice(range(2), N)
         self.C[self.indsMF] = 2
         self.C[self.indsFM] = 3
         
@@ -279,22 +304,30 @@ class LatentPoissonDPGMM2:
             self.gammaMF, self.gammaFM = updateGamma(self.C, self.PPGammaPrior)
             self.etaMF, self.etaFM = updateEta(self.C, self.etaPrior)
             
-            ## 4. Update the Gaussian Mixture Model for the densities
+            ## 4. Update the DP Gaussian Mixture Model for the densities
             # 4.1 MF surface
             MF_indsall = list(self.indsMF) + list(self.inds0MF)
             X_MF = X[MF_indsall,:]
             self.Z_MF = updateComponentIndicator(X_MF, self.weightMF, self.componentsMF)
-            self.weightMF = updateMixtureWeight(self.Z_MF, self.weightPrior)
             self.componentsMF = updateGaussianComponents(X_MF, self.Z_MF, self.componentsMF,
                                                          self.muPrior, self.precisionPrior)
+            self.weightMF = updateMixtureWeight(self.Z_MF, self.alpha_MF, self.Kmax)
+            K_MF = len(np.unique(self.Z_MF))
+            self.alpha_MF = updateAlpha(K_MF, N, self.alpha_MF, self.alphaPrior)
+            
             # 4.2 FM surface
             FM_indsall = list(self.indsFM) + list(self.inds0FM)
             X_FM = X[FM_indsall,:][:,(1,0)]
             self.Z_FM = updateComponentIndicator(X_FM, self.weightFM, self.componentsFM)
-            self.weightFM = updateMixtureWeight(self.Z_FM, self.weightPrior)
             self.componentsFM = updateGaussianComponents(X_FM, self.Z_FM, self.componentsFM,
                                                          self.muPrior, self.precisionPrior)
-
+            self.weightFM = updateMixtureWeight(self.Z_FM, self.alpha_FM, self.Kmax)
+            K_FM = len(np.unique(self.Z_FM))
+            self.alpha_FM = updateAlpha(K_FM, N, self.alpha_FM, self.alphaPrior)
+            
+            if verbose and it<burn:
+                print('Burn-in at iteration {}/{}.'.format(it, self.maxIter))
+           
             
             ## 5. Save parameter in chains if...
             if (it >= burn) & ((it+1-burn) % thin == 0):
@@ -314,22 +347,87 @@ class LatentPoissonDPGMM2:
                 self.chains['componentsFM'].append(self.componentsFM)
                 self.chains['weightMF'].append(self.weightMF)
                 self.chains['weightFM'].append(self.weightFM)
+                self.chains['alpha_MF'].append(self.alpha_MF)
+                self.chains['alpha_FM'].append(self.alpha_FM)
                 
                 if verbose:
                     print('Parameters saved at iteration {}/{}.'.format(it, self.maxIter))
             
         return
     
-    def plotChains(self, param, savepath=None):
+    def plotChains(self, param, s=None, savepath=None):
+        '''
+        param: parameter name
+        s: which iteration to display
+        savepath: path to save figure
+        '''
         if param.startswith('compo'):
-            # don't deal with components right now...
-            pass
+            
+            chain = self.chains[param]
+            if s >= len(chain) or s is None:
+                s = -1
+            components = chain[s]
+                
+            # also load the mixture weights
+            suffix = param[-2:]
+            weights = self.chains['weight'+suffix][s]
+            
+            # make density contour plot
+            Amin = 15.0; Amax = 50.0
+            x = np.linspace(Amin, Amax)
+            y = np.linspace(Amin, Amax)
+            X, Y = np.meshgrid(x, y)
+            XX = np.array([X.ravel(), Y.ravel()]).T
+            
+            Z = evalDensity(XX, weights, components, log=True)
+            Z = Z.reshape(X.shape)
+            
+            plt.contourf(X,Y,Z)
+            
+            # overlay with the predicted age-pair points
+            C = self.chains['C'][s]
+            
+            if suffix=='MF':
+                data = getPoints(self.E)[C==2,:]
+            else:
+                data = getPoints(self.E)[C==3,:][:,(1,0)]
+            
+            plt.scatter(data[:,0], data[:,1], c="black")
+            
+            
+            plt.title('predicted log-density of the {} surface'.format(suffix))
+            plt.xlabel('transmitter age')
+            plt.ylabel('recipient age')
+            plt.show()
+ 
         elif param=="C":
-            # don't deal with C indicators either...
-            pass
+            # s: can serve as the starting point for querying the chain
+            
+            def tabulate(C):
+                counts = np.empty(shape=4)
+                for k in range(4):
+                    counts[k] = np.sum(C==k)
+                return counts
+            
+            if s is None or s<0 or s>=len(self.chain['C']):
+                s = 0
+                
+            Cs = np.array(self.chain['C'][s:])
+            all_counts = np.apply_along_axis(tabulate, 1, Cs)
+            Counts_mean = np.mean(all_counts,axis=0)
+            Counts_std = np.std(all_counts,axis=0)
+            
+            ind = np.arange(len(Counts_mean))
+            plt.bar(ind, Counts_mean, 0.5, yerr = Counts_std,
+                    error_kw=dict(lw=3, capsize=3, capthick=2))
+            plt.title('Number of points allocated to each type through the chain')
+            plt.xticks(ind, ('MF0', 'FM0', 'MF', 'FM'))
+            plt.show()
+            
+            
         elif param.startswith('weight'):
             chain = np.array(self.chains[param])
-            for k in range(self.K):
+            for k in range(self.Kmax):
                 #this_label = 'comp '+str(k)
                 this_label = str(k)
                 plt.plot(chain[:,k],"-",label=this_label)
@@ -369,6 +467,19 @@ Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
       "eta": {'a': 1, 'b': 1}}  
 
 model = LatentPoissonGMM2(Priors = Pr, K=3)
+
+#%%
+# Aug 29, 2020
+# try running the updated GP-GMM model
+Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
+      "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001},
+      "precisionGMM": {'df': 2, 'invScale': np.eye(2)},
+      "probs": np.ones(3), 
+      "alpha": {'a': 2.0, 'b':3.0},
+      "gammaPP": {'n0': 1, 'b0': 0.02},
+      "eta": {'a': 1, 'b': 1}}
+
+model = LatentPoissonDPGMM2(Priors = Pr, K=3, Kmax=10)
 
 ## Some completely made-up data that won't follow the model at all
 #E = {i: (np.random.random_sample(),np.random.random_sample()) for i in range(100)}
@@ -441,7 +552,7 @@ plt.show()
 
 #%%
 # try to fit 
-model.fit(E, L, D, samples=2000, burn=0, random_seed = 89, debugHack=False)
+model.fit(E, L, D, samples=5000, burn=1000, random_seed = 89, debugHack=False)
 
 # plot number of points in each process
 model.plotChains('N_MF')
@@ -449,8 +560,12 @@ model.plotChains('N_FM')
 model.plotChains('weightMF','weightMF_diffGMM.pdf')
 model.plotChains('weightFM','weightFM_diffGMM.pdf')
 model.plotChains('etaMF')
+model.plotChains('gammaMF')
 model.plotChains('muL')
 model.plotChains('muD')
+model.plotChains('muNegD')
+model.plotChains('alpha_MF')
+model.plotChains('alpha_FM')
 
 ### Finding based on v1 and v2
 ## The MF and FM surfaces should have different patterns 

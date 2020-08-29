@@ -18,7 +18,7 @@ from numpy.linalg import inv
 from numpy.random import choice
 from scipy.special import logit, expit
 from scipy.stats import multivariate_normal, norm, truncnorm
-from scipy.stats import wishart#, invwishart
+from scipy.stats import wishart, invwishart
 from scipy.stats import dirichlet
 from sklearn.cluster import KMeans
 
