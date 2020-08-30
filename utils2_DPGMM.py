@@ -539,7 +539,7 @@ def getProbVector(p):
         
     '''
     p[p==np.inf] = 3000
-    p[p==-np.inf] = 3000
+    p[p==-np.inf] = -3000
     
     p = np.exp(p - np.max(p))
     #print(p)
