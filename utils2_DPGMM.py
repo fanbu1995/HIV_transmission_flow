@@ -556,7 +556,7 @@ def getProbVector(p):
         
     '''
     p[p==np.inf] = 3000
-    p[p==-np.inf] = 3000
+    p[p==-np.inf] = -3000
     
     p = np.exp(p - np.max(p))
     #print(p)
@@ -592,6 +592,8 @@ def updateComponentIndicator(X, weight, components):
         
     Z = np.apply_along_axis(lambda v: choice(range(K), replace=False, 
                                              p=getProbVector(v)), 0, logDens)
+    
+    #print(Z)
     
     # relabel for later use!
     Z, components = relabel(Z, components, Kmax=len(components))

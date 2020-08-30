@@ -27,6 +27,8 @@ plt.style.use('ggplot')
 # to see all styles
 # print(plt.style.available)
 
+import pickle as pkl
+
 #%%
 
 # updated model from version 2.0 (2 surface, 4 types)     
@@ -108,7 +110,8 @@ class LatentPoissonDPGMM2:
                                  'componentsMF', 'weightMF',
                                  'componentsFM', 'weightFM',
                                  'N_MF', 'N_FM', 'C', 'etaMF', 'etaFM',
-                                 'alpha_MF', 'alpha_FM']
+                                 'alpha_MF', 'alpha_FM',
+                                 'Z_MF', 'Z_FM'] # track the Z labels as well!
         # log-likelihood
         #self.log-lik-terms = None # each pair's contribution to the log-likelihood
         self.log_lik = None # total log-likelihood
@@ -350,6 +353,10 @@ class LatentPoissonDPGMM2:
                 self.chains['alpha_MF'].append(self.alpha_MF)
                 self.chains['alpha_FM'].append(self.alpha_FM)
                 
+                ## also tracking Z_MF's and Z_FM's
+                self.chains['Z_MF'].append(self.Z_MF)
+                self.chains['Z_FM'].append(self.Z_FM)
+                
                 if verbose:
                     print('Parameters saved at iteration {}/{}.'.format(it, self.maxIter))
             
@@ -468,15 +475,17 @@ class LatentPoissonDPGMM2:
  
 #%%
 # try running the updated new model
- 
-Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
-      "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001},
-      "precisionGMM": {'df': 2, 'invScale': np.eye(2)},
-      "weight": np.ones(3), "probs": np.ones(3),
-      "gammaPP": {'n0': 1, 'b0': 0.02},
-      "eta": {'a': 1, 'b': 1}}  
 
-model = LatentPoissonGMM2(Priors = Pr, K=3)
+# OUTDATED version of precision matrices
+
+#Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
+#      "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001},
+#      "precisionGMM": {'df': 2, 'invScale': np.eye(2)},
+#      "weight": np.ones(3), "probs": np.ones(3),
+#      "gammaPP": {'n0': 1, 'b0': 0.02},
+#      "eta": {'a': 1, 'b': 1}}  
+#
+#model = LatentPoissonGMM2(Priors = Pr, K=3)
 
 #%%
 # Aug 29, 2020
@@ -637,7 +646,7 @@ plt.show()
 
 #%%
 # try to fit 
-model.fit(E, L, D, samples=3000, burn=500, random_seed = 73, debugHack=False)
+model.fit(E, L, D, samples=3000, burn=0, random_seed = 89, debugHack=False)
 
 # plot number of points in each process
 model.plotChains('N_MF')
@@ -661,5 +670,8 @@ model.plotChains('alpha_FM')
 ### Based on V3
 ### As long as the components are somewhat different, it works!
 
-model.plotChains('componentsFM', s=1000)
-model.plotChains('componentsMF', s=1000)
+model.plotChains('componentsFM', s=2000, savepath='FM_surface.pdf')
+model.plotChains('componentsMF', s=2000, savepath='MF_surface.pdf')
+
+# save model to an object
+pkl.dum
