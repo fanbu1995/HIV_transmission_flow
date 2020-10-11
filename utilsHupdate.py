@@ -18,6 +18,11 @@ from sklearn.cluster import KMeans
 #import pandas as pd
 from copy import copy
 
+# 10/11/2020 update
+# numpy.random new generator...
+from numpy.random import default_rng
+rng = default_rng()
+
 #%%
 
 # 1-d Gaussian stuff (score model)
@@ -360,16 +365,80 @@ if __name__ == '__main__':
     
     E1, E2, chosen = proposePP(E, E1, E2, 10)
 
+
+
 #%%
+    
+# update 10/11/2020: try out DP GMM
+ 
 
-# Gaussian mixture stuff (spatal density model)
+# sample new components from base measure
+# here still use (mu,precision)!!
+def sampleNewComp(Knew, muPrior, precisionPrior):
+    '''
+    Knew: number of new components to generate
+    muPrior: dictionary of prior mean and precision --> covariance
+    precisionPrior: dictionary of prior df and invScale AND Scale
+    
+    return: a list of NEW components
+    '''
+    comps = []
+    
+    if Knew == 0:
+        return comps
+    
+    muCov = inv(muPrior['precision'])
+    #precisionScale = inv(precisionPrior['invScale'])
+    
+    #muCov = muPrior['covariance']
+    #covarianceScale = precisionPrior['Scale']
+    
+    
+    for k in range(Knew):
+        #mu = rng.multivariate_normal(muPrior['mean'], muPrior['covariance'])
+        mu = rng.multivariate_normal(muPrior['mean'], muCov)
+        precision = wishart(precisionPrior['df'], precisionPrior['Scale']).rvs()
+        #covariance = invwishart(precisionPrior['df'], precisionPrior['Scale']).rvs()
+        
+        comps.append((mu, precision))
+        #comps.append((mu, covariance))
+    
+    return comps   
 
-def initializeGMM(X, K=2):
+
+# re-order components (and re-label labels) by sizes of components
+def relabel(labels, components, Kmax=10):
+    have_labels, counts = np.unique(labels,return_counts=True)
+    label_order = np.argsort(counts)[::-1]
+    
+    new_labels = np.empty_like(labels)
+    new_components = list()
+    
+    for k in range(len(have_labels)):
+        # re-label
+        new_labels[labels==label_order[k]] = k
+        # move around components
+        new_components.append(components[label_order[k]])
+        
+    # also include those components not present in population
+    other_comps = [components[k] for k in range(Kmax) if k not in have_labels]
+    new_components.extend(other_comps)
+    
+    return new_labels, new_components
+
+
+# initialize DP GMM 
+# get some components via K-means
+# and append some new (surplus) components without associated datapoints
+def initializeDPGMM(X, muPrior, precisionPrior, K=3, Kmax=10):
     '''
     Initialize a finite Gaussian mixture model via k-means;
     Returns components (mean and precision matrix) and component labels
     X: (n,p) array of data
-    K: number of components
+    K: number of components to initialize with
+    Kmax: max number of components for the truncated DP GMM
+    
+    returns: a list of Kmax components (center and co)
     '''
     kmeans = KMeans(n_clusters=K).fit(X)
     labels = kmeans.labels_
@@ -377,11 +446,24 @@ def initializeGMM(X, K=2):
     
     components = list()
     for k in range(K):
-        components.append((centers[k,:], np.cov(X[labels==k,:],rowvar=False)))
+        # still use precision matrix!
+        components.append((centers[k,:], inv(np.cov(X[labels==k,:],rowvar=False))))
+        # use covariance instead!
+        #components.append((centers[k,:], np.cov(X[labels==k,:],rowvar=False)))
+    
+    # re-order components by counts
+    labels, components = relabel(labels, components, Kmax=K)
+    
+    # then add more surplus components if necessary
+    if Kmax > K:
+        new_comps = sampleNewComp(Kmax-K, muPrior, precisionPrior)
+        components.extend(new_comps)
         
     return components, labels
 
 
+# update one Gaussian component
+# inherited from before!
 def updateOneComponent(X, mu, precision, muPrior, precisionPrior):
     '''
     X: (n,p) array of data
@@ -405,15 +487,27 @@ def updateOneComponent(X, mu, precision, muPrior, precisionPrior):
     
     return mu, precision
 
+
+# update all GMM components
+#     i) update from data X if n_j > 0
+#     ii) draw new components if n_j == 0
 def updateGaussianComponents(X, Z, components, muPrior, precisionPrior):
     '''
     X: (n,p) array of data
-    Z: length n, array like component indicator
-    components: list of (mu, precision) for K Gaussian components
-    muPrior: dictionary of prior mean and precision
-    precisionPrior: dictionary of prior df and invScale
+    Z: length n, array like component indicator (only K distinct labels)
+    components: list of (mu, precision) for Kmax Gaussian components
+    muPrior: dictionary of prior mean and precision-->covariance
+    precisionPrior: dictionary of prior df and invScale AND Scale
+    
+    Assume that
+        - Z has K distinct values, 0,1,...,K-1
+        - The labels are already ordered by component counts!
+        - components has length Kmax (the last Kmax-K components have no data points)
     '''
-    K = len(components)
+    Kmax = len(components)
+    
+    have_labels = np.unique(Z)
+    K = len(have_labels)
     
     for k in range(K):
         subX = X[Z==k,:]
@@ -421,9 +515,14 @@ def updateGaussianComponents(X, Z, components, muPrior, precisionPrior):
             mu, precision = components[k]
             components[k] = updateOneComponent(subX, mu, precision, 
                       muPrior, precisionPrior)
+    
+    if Kmax > K:
+        components[K:Kmax] = sampleNewComp(Kmax-K, muPrior, precisionPrior)
             
     return components
 
+
+# the prob vector function
 def getProbVector(p):
     
     # some "anti-infinity" truncation to address numerical issues
@@ -437,11 +536,21 @@ def getProbVector(p):
     
     return p/p.sum()
 
+
+# update component indicators
+# 10/11/2020: need to do this for each surface, then combine!
+# also: still use (mu, precision)
 def updateComponentIndicator(X, weight, components):
     '''
     X: (n,p) array of data
+    weight: the mixture weight vector (for the surface that X lands on)
     components: list of (mu, precision) for K Gaussian components
+    
+    09/29 change: each component is (mu, covariance) instead
+    
     (05/13 fix: use weights in indicator update! previous version was wrong)
+    
+    08/29 addtion: relabel the indicators and components by descending counts
     '''
     K = len(components)
     n = X.shape[0]
@@ -450,7 +559,7 @@ def updateComponentIndicator(X, weight, components):
     
     for k in range(K):
         mu, precision = components[k]
-        MVN = multivariate_normal(mu, inv(precision))
+        MVN = multivariate_normal(mu, inv(precision), allow_singular=True)
         logDens[k,:] = MVN.logpdf(X) + np.log(weight[k])
 #        logProb = MVN.logpdf(X)
 #        if np.any(np.isnan(logProb)):
@@ -461,22 +570,207 @@ def updateComponentIndicator(X, weight, components):
         
     Z = np.apply_along_axis(lambda v: choice(range(K), replace=False, 
                                              p=getProbVector(v)), 0, logDens)
+    
+    #print(Z)
+    
+    # relabel for later use!
+    # (commented out because this needs to be done in the main fit function)
+    #Z, components = relabel(Z, components, Kmax=len(components))
+    
     return Z
 
-def updateMixtureWeight(Z, weightPrior):
+
+# update component weights
+# 10/11/20: do this on each surface, with labels Z "shared"
+def updateMixtureWeight(Z, alpha, Kmax=10):
     '''
     Z: length n, array like component indicator
-    weightPrior: length K, array like prior (for the Dirichlet prior)
+    alpha: the precision parameter for DP
+    
+    Assume that Z is labeled properly with descending counts
+    (this may be violated in the Hierarchical 3-surface model)
+    
+    return: updated weight vector
+    
+    (Update following Chunlin Ji et al. 2009)
     '''
-    unique, counts = np.unique(Z, return_counts=True)
-    mixtureCounts = dict(zip(unique,counts))
     
-    alpha = copy(weightPrior)
+    # count component sizes
+    counts = np.empty(shape=Kmax)
+    for k in range(Kmax):
+        counts[k] = np.sum(Z==k)
     
-    for k in mixtureCounts:
-        alpha[k] += mixtureCounts[k]
+    # calculate the v's
+    V = np.empty(shape=Kmax)
+    for k in range(Kmax-1):
+        alpha_k = 1+counts[k]
+        beta_k = alpha + np.sum(counts[(k+1):])
+        V[k] = rng.beta(alpha_k, beta_k)
+    V[Kmax-1] = 1
+    
+    # calculate mixture probs
+    W = np.empty_like(V)
+    W[0] = V[0]
+    V[0] = 1-V[0]
+    W[1] = V[1] * V[0]
+    for k in range(1, Kmax-1):
+        V[k] = V[k-1] * (1-V[k])
+        W[k+1] = V[k+1] * V[k]
         
-    return dirichlet(alpha).rvs()[0]
+    return W
+    
+   
+# update precision (alpha) for DP
+def updateAlpha(K, N, alpha, alphaPrior):
+    '''
+    K: num of unique components currently
+    N: total number of data points
+    alpha: current value of alpha (>0)
+    alphaPrior: dictionary of Gamma prior
+        - "a": rate
+        - "b": shape (inverse of scale!)
+    
+    returns a new draw of alpha
+    
+    source: Escobar and West 1995
+    '''
+    a = alphaPrior['a']; b = alphaPrior['b']
+    
+    # auxiliary param "eta"
+    aux = rng.beta(alpha+1, N)
+    
+    # odds
+    odds = (a+K-1)/(N*(b-np.log(aux)))
+    
+    pi_aux = odds/(1+odds)
+    if rng.binomial(1,pi_aux) == 1:
+        alpha = rng.gamma(a+K, 1/(b-np.log(aux)))
+    else:
+        alpha = rng.gamma(a+K-1, 1/(b-np.log(aux)))
+        
+    return alpha
+
+
+
+#%%
+
+# Gaussian mixture stuff (spatal density model)
+
+# 10/11/2020: commented out a bunch to extend to DP prior
+
+def initializeGMM(X, K=2):
+    '''
+    Initialize a finite Gaussian mixture model via k-means;
+    Returns components (mean and precision matrix) and component labels
+    X: (n,p) array of data
+    K: number of components
+    '''
+    kmeans = KMeans(n_clusters=K).fit(X)
+    labels = kmeans.labels_
+    centers = kmeans.cluster_centers_
+    
+    components = list()
+    for k in range(K):
+        components.append((centers[k,:], np.cov(X[labels==k,:],rowvar=False)))
+        
+    return components, labels
+
+
+#def updateOneComponent(X, mu, precision, muPrior, precisionPrior):
+#    '''
+#    X: (n,p) array of data
+#    mu: (p,1) array of current mean
+#    precision: (p,p) matrix of current precision
+#    muPrior: dictionary of prior mean and precision
+#    precisionPrior: dictionary of prior df and invScale
+#    '''
+#    
+#    n = X.shape[0]
+#    An_inv = inv(muPrior['precision'] + n * precision)
+#    Xsum = np.sum(X, axis=0)
+#    bn = muPrior['precision'].dot(muPrior['mean']) + precision.dot(Xsum)
+#    
+#    mu = multivariate_normal(An_inv.dot(bn), An_inv).rvs()
+#    
+#    S_mu = np.matmul((X-mu).T, X-mu)
+#    
+#    precision = wishart(precisionPrior['df'] + n, 
+#                        inv(precisionPrior['invScale'] + S_mu)).rvs()
+#    
+#    return mu, precision
+
+#def updateGaussianComponents(X, Z, components, muPrior, precisionPrior):
+#    '''
+#    X: (n,p) array of data
+#    Z: length n, array like component indicator
+#    components: list of (mu, precision) for K Gaussian components
+#    muPrior: dictionary of prior mean and precision
+#    precisionPrior: dictionary of prior df and invScale
+#    '''
+#    K = len(components)
+#    
+#    for k in range(K):
+#        subX = X[Z==k,:]
+#        if subX.shape[0] > 0:
+#            mu, precision = components[k]
+#            components[k] = updateOneComponent(subX, mu, precision, 
+#                      muPrior, precisionPrior)
+#            
+#    return components
+
+#def getProbVector(p):
+#    
+#    # some "anti-infinity" truncation to address numerical issues
+#    
+#    p[p==np.inf] = 3000
+#    p[p==-np.inf] = -3000
+#    
+#    p = np.exp(p - np.max(p))
+#    
+#    #print(p)
+#    
+#    return p/p.sum()
+
+#def updateComponentIndicator(X, weight, components):
+#    '''
+#    X: (n,p) array of data
+#    components: list of (mu, precision) for K Gaussian components
+#    (05/13 fix: use weights in indicator update! previous version was wrong)
+#    '''
+#    K = len(components)
+#    n = X.shape[0]
+#    
+#    logDens = np.empty((K,n))
+#    
+#    for k in range(K):
+#        mu, precision = components[k]
+#        MVN = multivariate_normal(mu, inv(precision))
+#        logDens[k,:] = MVN.logpdf(X) + np.log(weight[k])
+##        logProb = MVN.logpdf(X)
+##        if np.any(np.isnan(logProb)):
+##            print(mu, precision)
+##            raise ValueError("NaN in log likelihood!")
+##        else:
+##            logDens[k,:] = logProb
+#        
+#    Z = np.apply_along_axis(lambda v: choice(range(K), replace=False, 
+#                                             p=getProbVector(v)), 0, logDens)
+#    return Z
+
+#def updateMixtureWeight(Z, weightPrior):
+#    '''
+#    Z: length n, array like component indicator
+#    weightPrior: length K, array like prior (for the Dirichlet prior)
+#    '''
+#    unique, counts = np.unique(Z, return_counts=True)
+#    mixtureCounts = dict(zip(unique,counts))
+#    
+#    alpha = copy(weightPrior)
+#    
+#    for k in mixtureCounts:
+#        alpha[k] += mixtureCounts[k]
+#        
+#    return dirichlet(alpha).rvs()[0]
 
 def evalDensity(X, weight, components, log=True):
     '''

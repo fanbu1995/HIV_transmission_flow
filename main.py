@@ -1034,7 +1034,7 @@ E = dict(zip(range(nr), edges))
 plt.plot(L,"o")
 plt.show()
 
-plt.plot(D, "o")
+plt.plot(D, "o") # no super clear pattern
 plt.show()
 
 
@@ -1061,6 +1061,7 @@ model.plotChains('weight0')
 model.plotChains('muL')
 model.plotChains('muD')
 model.plotChains('muNegD')
+model.plotChains('gammaD')
 model.plotChains('probs')
 
 model.plotChains('components', s=2800, savepath='3surface_components.pdf')
@@ -1089,3 +1090,9 @@ model.plotChains('components', s=2800, savepath='3surface_components.pdf')
 ## almost all points land in the FM surface (Prob(2) very close to 1 and it doesn't come back)
 
 #pkl.dump(model, file=open("Oct11_synData_3surface_3000iters.pkl",'wb'))
+
+
+## still, almost all points land in the FM surface
+
+pkl.dump(model, file=open("Oct11_synData_3surface_3000iters_2.pkl",'wb')) 
+# most "balanced" allocation: iteration 1640

@@ -426,7 +426,7 @@ class LatentPoissonDPGMM2:
             if s is None or s<0 or s>=len(self.chain['C']):
                 s = 0
                 
-            Cs = np.array(self.chain['C'][s:])
+            Cs = np.array(self.chains['C'][s:])
             all_counts = np.apply_along_axis(tabulate, 1, Cs)
             Counts_mean = np.mean(all_counts,axis=0)
             Counts_std = np.std(all_counts,axis=0)
@@ -585,7 +585,7 @@ Settings = {'N_MF': 80, 'N_FM': 70, 'N_MF0':20, 'N_FM0': 30,
 Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
       "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001,
                 'covariance': np.eye(2)*10000},
-      "precisionGMM": {'df': 2, 'invScale': np.eye(2), 'Scale': np.eye(2)},
+      "precisionGMM": {'df': 2, 'invScale': np.eye(2), 'Scale': np.eye(1)},
       "probs": np.ones(3), 
       "gammaPP": {'n0': 1, 'b0': 0.02},
       "eta": {'a': 1, 'b': 1},

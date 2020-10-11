@@ -9,7 +9,6 @@ Created on Sun Oct 11 15:35:05 2020
 #%%
 
 # implement the Dirichlet process version of 3-surface model
-
 import os
 #os.chdir('/Users/fan/Documents/Research_and_References/HIV_transmission_flow/')
 
@@ -39,8 +38,8 @@ def getProbVector(p):
     return p/p.sum()
 
 
-class LatentPoissonHGMM:
-    def __init__(self, Priors, K=3, linkThreshold=0.6):
+class LatentPoissonDPHGMM:
+    def __init__(self, Priors, K=3, Kmax = 10, linkThreshold=0.6):
         '''
         Inialize an instance of the LatentPoisson Hierarchical GMM model;
         Priors: a big dictionary of all the priors
@@ -54,19 +53,21 @@ class LatentPoissonHGMM:
             - "weight": prior vector (length K) for Gaussian Mixture weight;
             - "gammaScore": prior dictionary for inverse variance of the score models;
                 need "nu0" and "sigma0"
-            
+            - "alpha": prior for the DP precision; need "a" and "b"
         '''
-        self.name = "Latent Poisson Process with Gaussian Mixture density"
+        self.name = "Latent Poisson Process with Dirichlet Process Gaussian Mixture density"
         self.linkInitialThreshold = linkThreshold
         # number of mixture components
         self.K = K
+        self.Kmax = Kmax
         # prior part
         self.ScoreGammaPrior = Priors["gammaScore"]
         self.muPrior = Priors["muGMM"]
         self.precisionPrior = Priors["precisionGMM"]
-        self.weightPrior = Priors["weight"]
+        #self.weightPrior = Priors["weight"]
         self.PPGammaPrior = Priors["gammaPP"]
         self.probPrior = Priors["probs"]
+        self.alphaPrior = Priors['alpha']
         # data part
         self.E = None # all the (a_M,a_F) pairs
         self.L = None # all the linked scores
@@ -93,9 +94,11 @@ class LatentPoissonHGMM:
         self.Z = None # component indicator for all points (length N)
 #        self.Z_FM = None # component indicator for MF process
 #        self.Z_0 = None # component indicator for the outside process
+        self.alpha = None # DP precision for the shared mixture components
         self.params_to_record = ['muL','muD', 'muNegD', 'gammaL', 'gammaD', 
                                  'N_MF', 'N_FM', 'gamma', 'probs', 'C', 
-                                 'components', 'weightMF', 'weightFM', 'weight0']
+                                 'components', 'weightMF', 'weightFM', 'weight0',
+                                 'alpha']
         # log-likelihood
         #self.log-lik-terms = None # each pair's contribution to the log-likelihood
         self.log_lik = None # total log-likelihood
@@ -209,20 +212,29 @@ class LatentPoissonHGMM:
         self.C = np.zeros(N)
         self.C[self.indsMF] = 1
         self.C[self.indsFM] = 2
-        # 3) Gaussian components
+        # 3) DP Gaussian components
+        ## some initial estimates of alpha
+        self.alpha = rng.gamma(self.alphaPrior['a'], 1/self.alphaPrior['a'], size=1)
+        
         X = getPoints(self.E)
-        self.components, self.Z = initializeGMM(X, self.K)
+        self.components, self.Z = initializeDPGMM(X, self.muPrior, 
+                                                  self.precisionPrior, self.K, self.Kmax)
         # 4) GMM weights
         # 4.1) MF surface
         X_MF = X[self.indsMF,:]
-        self.weightMF = updateMixtureWeight(self.Z[self.indsMF], self.weightPrior)
+        self.weightMF = updateMixtureWeight(self.Z[self.indsMF], self.alpha, self.Kmax)
+        
         # 4.2) the FM surface
         X_FM = X[self.indsFM,:]
-        self.weightFM = updateMixtureWeight(self.Z[self.indsFM], self.weightPrior)
+        self.weightFM = updateMixtureWeight(self.Z[self.indsFM], self.alpha, self.Kmax)
         # 4.2) the outsiders
         self.inds0 = np.where(self.C == 0)[0]
         X_0 = X[self.inds0,:]
-        self.weight0 = updateMixtureWeight(self.Z[self.inds0], self.weightPrior)
+        self.weight0 = updateMixtureWeight(self.Z[self.inds0], self.alpha, self.Kmax)
+        
+        # 5) update alpha
+        K = len(np.unique(self.Z))
+        self.alpha = updateAlpha(K, N, self.alpha, self.alphaPrior)
         
         if(verbose):
             print('Initialization done!')
@@ -267,28 +279,33 @@ class LatentPoissonHGMM:
             self.gamma = np.random.gamma(self.PPGammaPrior['n0']+N, 1/(self.PPGammaPrior['b0']+1))
             
             ## 4. Update the Gaussian Mixture Model for the densities
-            ### the part shared by everyone
+            ### 4.0 the part shared by everyone
+            # 10/11/2020: re-order the labels first!
+            self.Z, self.components = relabel(self.Z, self.components, self.Kmax)
             self.components = updateGaussianComponents(X, self.Z, self.components, 
                                                        self.muPrior, self.precisionPrior)
-            
-            
+
             ## UPDATE 10/11/2020: if any set is empty, don't update
             # 4.1 MF surface
             if len(self.indsMF) > 0:
                 X_MF = X[self.indsMF,:]
                 self.Z[self.indsMF] = updateComponentIndicator(X_MF, self.weightMF, self.components)
-                self.weightMF = updateMixtureWeight(self.Z[self.indsMF], self.weightPrior)
+                self.weightMF = updateMixtureWeight(self.Z[self.indsMF], self.alpha, self.Kmax)
             # 4.2 the FM surface
             if len(self.indsFM) > 0:
                 X_FM = X[self.indsFM,:]
                 self.Z[self.indsFM] = updateComponentIndicator(X_FM, self.weightFM, self.components)
-                self.weightFM = updateMixtureWeight(self.Z[self.indsFM], self.weightPrior)
+                self.weightFM = updateMixtureWeight(self.Z[self.indsFM], self.alpha, self.Kmax)
             # 4.3 the outsiders
             if len(self.inds0) > 0:
                 X_0 = X[self.inds0,:]
                 self.Z[self.inds0] = updateComponentIndicator(X_0, self.weight0, self.components)
-                self.weight0 = updateMixtureWeight(self.Z[self.inds0], self.weightPrior)
+                self.weight0 = updateMixtureWeight(self.Z[self.inds0], self.alpha, self.Kmax)
 
+            # 4.4 update alpha together
+            K = len(np.unique(self.Z))
+            self.alpha = updateAlpha(K, N, self.alpha, self.alphaPrior)
+            
             
             ## 5. Save parameter in chains if...
             if (it >= burn) & ((it+1-burn) % thin == 0):
@@ -306,6 +323,7 @@ class LatentPoissonHGMM:
                 self.chains['weightMF'].append(self.weightMF)
                 self.chains['weightFM'].append(self.weightFM)
                 self.chains['weight0'].append(self.weight0)
+                self.chains['alpha'].append(self.alpha)
                 
                 if verbose:
                     print('Parameters saved at iteration {}/{}.'.format(it, self.maxIter))
@@ -390,7 +408,7 @@ class LatentPoissonHGMM:
             if s is None or s<0 or s>=len(self.chain['C']):
                 s = 0
                 
-            Cs = np.array(self.chain['C'][s:])
+            Cs = np.array(self.chains['C'][s:])
             all_counts = np.apply_along_axis(tabulate, 1, Cs)
             Counts_mean = np.mean(all_counts,axis=0)
             Counts_std = np.std(all_counts,axis=0)
@@ -407,7 +425,7 @@ class LatentPoissonHGMM:
             
         elif param.startswith('weight'):
             chain = np.array(self.chains[param])
-            for k in range(self.K):
+            for k in range(self.Kmax):
                 #this_label = 'comp '+str(k)
                 this_label = str(k)
                 plt.plot(chain[:,k],"-",label=this_label)
@@ -446,5 +464,70 @@ class LatentPoissonHGMM:
     
     
 #%%
-        
+# update: 10/11/2020
+# try running the 3-surface version with DP on the "synthetic real" data
+
+import pandas as pd
+
+dat = pd.read_csv("../200928_data_not_unlike_real_data.csv")
+
+# filter out some "low linked prob" data points
+
+# a heuristic fix: only keep those not very close to 0 or 1
+
+dat = dat[(dat.POSTERIOR_SCORE_LINKED > 0.2) & (dat.POSTERIOR_SCORE_LINKED < 0.98) &
+          (dat.POSTERIOR_SCORE_MF > 0.02) & (dat.POSTERIOR_SCORE_MF < 0.98)]
+
+L = np.array(dat.POSTERIOR_SCORE_LINKED)
+D = np.array(dat.POSTERIOR_SCORE_MF)
+
+edges = np.array(dat[['MALE_AGE_AT_MID','FEMALE_AGE_AT_MID']])
+nr = edges.shape[0]
+
+E = dict(zip(range(nr), edges))
+
+plt.plot(L,"o")
+plt.show()
+
+plt.plot(D, "o") # no super clear pattern
+plt.show()     
     
+    
+#%%
+
+#K = 10
+
+Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
+      "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001,
+                'covariance': np.eye(2)*10000},
+      "precisionGMM": {'df': 2, 'invScale': np.eye(2), 'Scale': np.eye(2)},
+      #"weight": np.ones(K), 
+      "probs": np.ones(3),
+      "gammaPP": {'n0': 1, 'b0': 0.02},
+      "alpha": {'a': 2.0, 'b':3.0}}   
+
+model = LatentPoissonDPHGMM(Priors = Pr, K=3, Kmax = 10)
+
+model.fit(E, L, D, samples=3000, burn=0, random_seed = 89, debugHack=False)
+
+model.plotChains('N_MF')
+model.plotChains('N_FM')
+model.plotChains('weightMF')
+model.plotChains('weightFM')
+model.plotChains('weight0')
+model.plotChains('muL')
+model.plotChains('muD')
+model.plotChains('muNegD')
+model.plotChains('gammaD')
+model.plotChains('probs')
+model.plotChains('alpha')
+
+model.plotChains('C', s=200)
+
+model.plotChains('components', s=2800, savepath='3surfaceDP_components.pdf')
+
+# what's happening:
+# DP tends to select very few components: 
+#     1 or 2 giant components on each surface (not much pattern)
+# again, all points move to one surface (this time MF, not FM - unstable behavior)
+# is there an un-identifiability issue??
