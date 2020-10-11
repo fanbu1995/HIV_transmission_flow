@@ -6,9 +6,14 @@ Created on Wed May  6 16:45:23 2020
 @author: fan
 """
 
+# 10/11/2020: update the Hierarchical model to apply to real data
+
 #%%
 import os
-os.chdir('/Users/fan/Documents/Research_and_References/HIV_transmission_flow/')
+#os.chdir('/Users/fan/Documents/Research_and_References/HIV_transmission_flow/')
+
+# 10/11/2020: changed working directory
+os.chdir('/Users/fan/Documents/Research_and_References/HIV_transmission_flow/HIV_transmission_flow/')
 
 from copy import copy#, deepcopy
 
@@ -18,368 +23,368 @@ import matplotlib.pyplot as plt
 
 # the original model and inference method
 
-from utils import *
-
-class LatentPoissonGMM:
-    def __init__(self, Priors, K=3, linkThreshold=0.6):
-        '''
-        Inialize an instance of the LatentPoissonGMM model;
-        Priors: a big dictionary of all the priors
-            - "gammaPP": prior dictionary for the NHPP scale (gamma); 
-                need "n0" and "b0"
-            - "muGMM": prior dictionary for the means in Gaussian Mixture; 
-                need "mean" and "precision"
-            - "precisionGMM": prior dictionary for the precision matrices in Gaussian Mixture;
-                need "df" and "invScale"
-            - "weight": prior vector (length K) for Gaussian Mixture weight;
-            - "gammaScore": prior dictionary for inverse variance of the score models;
-                need "nu0" and "sigma0"
-            
-        '''
-        self.name = "Latent Poisson Process with Gaussian Mixture density"
-        self.linkInitialThreshold = linkThreshold
-        # number of mixture components
-        self.K = K
-        # prior part
-        self.ScoreGammaPrior = Priors["gammaScore"]
-        self.muPrior = Priors["muGMM"]
-        self.precisionPrior = Priors["precisionGMM"]
-        self.weightPrior = Priors["weight"]
-        self.PPGammaPrior = Priors["gammaPP"]
-        # data part
-        self.E = None # all the (a_M,a_F) pairs
-        self.L = None # all the linked scores
-        self.D = None # all the direction scores
-        self.indsMF = None # indices on the MF surface
-        self.indsFM = None # indices on the FM surface
-        self.E_MF = None # event set on MF surface
-        self.E_FM = None # event set on FM surface
-        # parameters
-        self.muL = None
-        self.muD = None
-        self.muNegD = None
-        self.gammaL = None
-        self.gammaD = None
-        self.gammaMF = None
-        self.gammaFM = None
-        self.componentsMF = None
-        self.componentsFM = None
-        self.weightMF = None
-        self.weightFM = None
-        self.Z_MF = None # component indicator for MF process
-        self.Z_FM = None # component indicator for MF process
-        self.params_to_record = ['muL','muD', 'muNegD', 'gammaL', 'gammaD', 
-                                 'N_MF', 'N_FM', 'gammaMF', 'gammaFM', 
-                                 'componentsMF', 'weightMF',
-                                 'componentsFM', 'weightFM']
-        # log-likelihood
-        #self.log-lik-terms = None # each pair's contribution to the log-likelihood
-        self.log_lik = None # total log-likelihood
-        # posterior inference (summary statistics and chains)
-        self.maxIter = None
-        self.burn = 0
-        self.thin = 1
-        self.batch_size = None
-        self.accept = dict() # counter for acceptance times
-        self.chains = {param: list() for param in self.params_to_record}
-            # a dictionary for parameter samples
-            
-    def evalLikelihood(self, E_MF, E_FM, X_MF=None, X_FM=None, subset=None):
-        '''
-        Evaluate likelihood
-        #E_MF, E_FM: dictionary of points in MF and FM
-        X_MF, X_FM: optional; (n,p) arrays of points in MF and FM
-        subset: SORTED indices of subset to evaluate on
-        Returns total log likelihood (or log-likehood part on the subset)
-        '''
-        
-        if (X_FM is None) or (X_MF is None):
-            X_FM = getPoints(E_FM, subset=subset)
-            X_MF = getPoints(E_MF, subset=subset)
-            
-        #print(X_FM)
-        #print(X_MF)
-        
-        # Right now: STUPID WAY - sum over individual entries
-        # later might change
-        
-        LLik = np.sum(evalLLikelihood(self.L, E_MF, E_FM, self.muL, 
-                                      self.gammaL, subset=subset, log=True))
-        DLik = np.sum(evalDLikelihood(self.D, E_MF, E_FM, self.muD, self.muNegD, 
-                                      self.gammaD, subset=subset, log=True))
-        
-        MFLik = np.sum(evalDensity(X_MF, self.weightMF, self.componentsMF, log=True)) if X_MF.size > 0 else 0
-        FMLik = np.sum(evalDensity(X_FM, self.weightFM, self.componentsFM, log=True)) if X_FM.size > 0 else 0
-        
-        #N_MF = len(E_MF); N_FM = len(E_FM)
-        N_MF = X_MF.shape[0]; N_FM = X_FM.shape[0]
-        
-        ## This is WRONG! NEED TO FIX THIS
-        
-        total = LLik + DLik + MFLik + FMLik
-        
-        if subset is None:
-            to_add = (N_MF * np.log(self.gammaMF) + N_FM * np.log(self.gammaFM) - 
-                      np.log(range(1,N_MF+1)).sum() - np.log(range(1,N_FM+1)).sum())
-            total += to_add - (self.gammaMF + self.gammaFM)
-            self.log_lik = total
-            
-        return total
-        
-
-    
-    def fit(self, E, L, D, samples = 1000, burn = 0, thin = 1, batch_size = 1,
-            random_seed = 42, verbose = True, debugHack = False):
-        '''
-        Fit the model via MCMC
-        '''
-        # set up
-        self.E = E
-        self.L = L
-        self.D = D
-        #self.log-lik-terms = np.empty(len(E))
-        self.burn = burn
-        self.thin = thin
-        self.maxIter = samples * thin + burn
-        self.batch_size = batch_size
-        
-        np.random.seed(random_seed)
-        
-        # initialize
-        # 1) scores
-        self.L, inds, self.muL, self.gammaL = initializeLinkedScore(self.L, self.linkInitialThreshold)
-        self.D, self.indsMF, self.indsFM, self.muD, self.muNegD, self.gammaD = initializeDirectScore(self.D, inds)
-        # 2) the PP
-        self.E_MF, self.E_FM, self.gammaMF, self.gammaFM = initializePP(self.E, self.indsMF, self.indsFM)
-        # 3) the MF surface
-        X_MF = getPoints(self.E_MF)
-        self.componentsMF, self.Z_MF = initializeGMM(X_MF, self.K)
-        self.weightMF = updateMixtureWeight(self.Z_MF, self.weightPrior)
-        # 4) the FM surface
-        X_FM = getPoints(self.E_FM)
-        self.componentsFM, self.Z_FM = initializeGMM(X_FM, self.K)
-        self.weightFM = updateMixtureWeight(self.Z_FM, self.weightPrior)
-        
-        if(verbose):
-            print('Initialization done!')
-        
-        # MCMC
-        # 05/09 debug: hack it to fix everything else except E_MF, E_FM and see how it goes...
-        for it in range(self.maxIter):
-            ## 1. the score models
-            # HACK it for debugging purposes:
-            if debugHack:
-                self.muL, self.gammaL = Settings['muL'], Settings['gammaL']
-                self.muD, self.muNegD, self.gammaD = Settings['muD'], Settings['muNegD'], Settings['gammaD']
-            else:
-                self.muL, self.gammaL = updateLModel(self.L, self.E_MF, self.E_FM, self.muL, 
-                                                     self.gammaL, self.ScoreGammaPrior)
-                
-                self.muD, self.muNegD, self.gammaD = updateDModel(self.D, self.E_MF, self.E_FM, 
-                                                                  self.muD, self.muNegD, 
-                                                                  self.gammaD, self.ScoreGammaPrior)                
-                
-            
-            
-            ## 2. the MF and FM point configurations
-            ### make a copy of the current version first
-            E_MF_old = copy(self.E_MF); E_FM_old = copy(self.E_FM)
-            
-            ### then propose change
-            self.E_MF, self.E_FM, chosen, step = proposePP(self.E, self.E_MF, self.E_FM, self.batch_size)
-            
-            ### accept or reject
-            ACC = "accepted"
-            
-#            logLik_old = self.evalLikelihood(E_MF_old, E_FM_old, subset=chosen)
-#            logLik_propose = self.evalLikelihood(self.E_MF, self.E_FM, subset=chosen)
-            
-#            N_MF_old = len(E_MF_old); N_FM_old = len(E_FM_old)
-#            N_MF = len(self.E_MF); N_FM = len(self.E_FM)
+#from utils import *
+#
+#class LatentPoissonGMM:
+#    def __init__(self, Priors, K=3, linkThreshold=0.6):
+#        '''
+#        Inialize an instance of the LatentPoissonGMM model;
+#        Priors: a big dictionary of all the priors
+#            - "gammaPP": prior dictionary for the NHPP scale (gamma); 
+#                need "n0" and "b0"
+#            - "muGMM": prior dictionary for the means in Gaussian Mixture; 
+#                need "mean" and "precision"
+#            - "precisionGMM": prior dictionary for the precision matrices in Gaussian Mixture;
+#                need "df" and "invScale"
+#            - "weight": prior vector (length K) for Gaussian Mixture weight;
+#            - "gammaScore": prior dictionary for inverse variance of the score models;
+#                need "nu0" and "sigma0"
 #            
-#            logDiff = (logLik_propose - logLik_old + 
-#                       (N_MF - N_MF_old) * np.log(self.gammaMF) + 
-#                       (N_FM - N_FM_old) * np.log(self.gammaFM) -
-#                       np.sign(N_MF - N_MF_old) * np.log(range(min(N_MF,N_MF_old)+1,max(N_MF,N_MF_old)+1)).sum() -
-#                       np.sign(N_FM - N_FM_old) * np.log(range(min(N_FM,N_FM_old)+1,max(N_FM,N_FM_old)+1)).sum())
+#        '''
+#        self.name = "Latent Poisson Process with Gaussian Mixture density"
+#        self.linkInitialThreshold = linkThreshold
+#        # number of mixture components
+#        self.K = K
+#        # prior part
+#        self.ScoreGammaPrior = Priors["gammaScore"]
+#        self.muPrior = Priors["muGMM"]
+#        self.precisionPrior = Priors["precisionGMM"]
+#        self.weightPrior = Priors["weight"]
+#        self.PPGammaPrior = Priors["gammaPP"]
+#        # data part
+#        self.E = None # all the (a_M,a_F) pairs
+#        self.L = None # all the linked scores
+#        self.D = None # all the direction scores
+#        self.indsMF = None # indices on the MF surface
+#        self.indsFM = None # indices on the FM surface
+#        self.E_MF = None # event set on MF surface
+#        self.E_FM = None # event set on FM surface
+#        # parameters
+#        self.muL = None
+#        self.muD = None
+#        self.muNegD = None
+#        self.gammaL = None
+#        self.gammaD = None
+#        self.gammaMF = None
+#        self.gammaFM = None
+#        self.componentsMF = None
+#        self.componentsFM = None
+#        self.weightMF = None
+#        self.weightFM = None
+#        self.Z_MF = None # component indicator for MF process
+#        self.Z_FM = None # component indicator for MF process
+#        self.params_to_record = ['muL','muD', 'muNegD', 'gammaL', 'gammaD', 
+#                                 'N_MF', 'N_FM', 'gammaMF', 'gammaFM', 
+#                                 'componentsMF', 'weightMF',
+#                                 'componentsFM', 'weightFM']
+#        # log-likelihood
+#        #self.log-lik-terms = None # each pair's contribution to the log-likelihood
+#        self.log_lik = None # total log-likelihood
+#        # posterior inference (summary statistics and chains)
+#        self.maxIter = None
+#        self.burn = 0
+#        self.thin = 1
+#        self.batch_size = None
+#        self.accept = dict() # counter for acceptance times
+#        self.chains = {param: list() for param in self.params_to_record}
+#            # a dictionary for parameter samples
 #            
-            # HACK 2: calculate log-lik on the whole dataset instead of on subset...
-            logLik_old = self.evalLikelihood(E_MF_old, E_FM_old, subset=None)
-            logLik_propose = self.evalLikelihood(self.E_MF, self.E_FM, subset=None)
-            logDiff = logLik_propose - logLik_old
-            
-            # HACK 3: add a "random noise point" density component to the likelihood
-            # assume an outside point comes from Unif([15,45] x [15,45])
-            # NOTE: this only works with batch_size == 1 case!!
-            if step == 'b':
-                logDiff -= np.log(1/30 * 1/30)
-            elif step == 'd':
-                logDiff += np.log(1/30 * 1/30)
-            else:
-                pass
-            
-            if logDiff > 0:
-                #self.accept += 1
-                prob = 1
-            else:
-                draw = np.random.random_sample()
-                prob = np.exp(logDiff)
-                if draw < prob:
-                    #self.accept += 1
-                    pass
-                else:
-                    self.E_MF = E_MF_old; self.E_FM = E_FM_old
-                    ACC = "rejected"
-                    
-            if ACC == "accepted":
-                if step in self.accept:
-                    self.accept[step] += 1
-                else:
-                    self.accept[step] = 1
-                    
-            if verbose:
-                print("In iteration {}, acceptance prob. ={}, proposal type {} gets {}!".format(it, prob, step, ACC))
-                
-            self.indsMF = list(self.E_MF.keys())
-            self.indsFM = list(self.E_FM.keys())
-                    
-            ## 3. Update gammaMF and gammaFM
-            # Hack it for debugging...
-            if debugHack:
-                self.gammaMF, self.gammaFM = Settings['N_MF'], Settings['N_FM']
-            else:
-                self.gammaMF, self.gammaFM = updateGammaPP(self.E_MF, self.E_FM, self.PPGammaPrior)
-            
-            
-            ## 4. Update the Gaussian Mixture Model for the densities
-            ### MF surface
-            X_MF = getPoints(self.E_MF)
-            
-            # Hack it for debugging...
-            if debugHack:
-                self.componentsMF = Settings['componentsMF']
-                self.weightMF = Settings['weightMF']
-                self.Z_MF = updateComponentIndicator(X_MF, self.weightMF, self.componentsMF)
-            else:
-                self.Z_MF = updateComponentIndicator(X_MF, self.weightMF, self.componentsMF)
-                self.componentsMF = updateGaussianComponents(X_MF, self.Z_MF, 
-                                                             self.componentsMF, 
-                                                             self.muPrior, self.precisionPrior)
-                self.weightMF = updateMixtureWeight(self.Z_MF, self.weightPrior)
-            
-            
-            ### FM surface
-            X_FM = getPoints(self.E_FM)
-            
-            # Hack it for debugging...
-            if debugHack:
-                self.componentsFM = Settings['componentsFM']
-                self.weightFM = Settings['weightFM']
-                self.Z_FM = updateComponentIndicator(X_FM, self.weightFM, self.componentsFM)
-            else:
-                self.Z_FM = updateComponentIndicator(X_FM, self.weightFM, self.componentsFM)
-                self.componentsFM = updateGaussianComponents(X_FM, self.Z_FM, 
-                                                             self.componentsFM, 
-                                                             self.muPrior, self.precisionPrior)
-                self.weightFM = updateMixtureWeight(self.Z_FM, self.weightPrior)
-            
-            ## 5. Save parameter in chains if...
-            if (it >= burn) & ((it+1-burn) % thin == 0):
-                self.chains['muL'].append(self.muL)
-                self.chains['muD'].append(self.muD)
-                self.chains['muNegD'].append(self.muNegD)
-                self.chains['gammaL'].append(self.gammaL)
-                self.chains['gammaD'].append(self.gammaD)
-                self.chains['N_MF'].append(len(self.indsMF))
-                self.chains['N_FM'].append(len(self.indsFM))
-                self.chains['gammaMF'].append(self.gammaMF)
-                self.chains['gammaFM'].append(self.gammaFM)
-                self.chains['componentsMF'].append(self.componentsMF)
-                self.chains['componentsFM'].append(self.componentsFM)
-                self.chains['weightMF'].append(self.weightMF)
-                self.chains['weightFM'].append(self.weightFM)
-                
-                if verbose:
-                    print('Parameters saved at iteration {}/{}.'.format(it, self.maxIter))
-            
-        return
-    
-    def plotChains(self, param):
-        if param.startswith('compo'):
-            # don't deal with components right now...
-            pass
-        elif param.startswith('weight'):
-            chain = np.array(self.chains[param])
-            for k in range(self.K):
-                plt.plot(chain[:,k],"-",label=str(k))
-            plt.legend('upper right')
-            plt.show()
-        else:
-            plt.plot(self.chains[param])
-            plt.show()
-            
-        return
-            
+#    def evalLikelihood(self, E_MF, E_FM, X_MF=None, X_FM=None, subset=None):
+#        '''
+#        Evaluate likelihood
+#        #E_MF, E_FM: dictionary of points in MF and FM
+#        X_MF, X_FM: optional; (n,p) arrays of points in MF and FM
+#        subset: SORTED indices of subset to evaluate on
+#        Returns total log likelihood (or log-likehood part on the subset)
+#        '''
+#        
+#        if (X_FM is None) or (X_MF is None):
+#            X_FM = getPoints(E_FM, subset=subset)
+#            X_MF = getPoints(E_MF, subset=subset)
+#            
+#        #print(X_FM)
+#        #print(X_MF)
+#        
+#        # Right now: STUPID WAY - sum over individual entries
+#        # later might change
+#        
+#        LLik = np.sum(evalLLikelihood(self.L, E_MF, E_FM, self.muL, 
+#                                      self.gammaL, subset=subset, log=True))
+#        DLik = np.sum(evalDLikelihood(self.D, E_MF, E_FM, self.muD, self.muNegD, 
+#                                      self.gammaD, subset=subset, log=True))
+#        
+#        MFLik = np.sum(evalDensity(X_MF, self.weightMF, self.componentsMF, log=True)) if X_MF.size > 0 else 0
+#        FMLik = np.sum(evalDensity(X_FM, self.weightFM, self.componentsFM, log=True)) if X_FM.size > 0 else 0
+#        
+#        #N_MF = len(E_MF); N_FM = len(E_FM)
+#        N_MF = X_MF.shape[0]; N_FM = X_FM.shape[0]
+#        
+#        ## This is WRONG! NEED TO FIX THIS
+#        
+#        total = LLik + DLik + MFLik + FMLik
+#        
+#        if subset is None:
+#            to_add = (N_MF * np.log(self.gammaMF) + N_FM * np.log(self.gammaFM) - 
+#                      np.log(range(1,N_MF+1)).sum() - np.log(range(1,N_FM+1)).sum())
+#            total += to_add - (self.gammaMF + self.gammaFM)
+#            self.log_lik = total
+#            
+#        return total
+#        
+#
+#    
+#    def fit(self, E, L, D, samples = 1000, burn = 0, thin = 1, batch_size = 1,
+#            random_seed = 42, verbose = True, debugHack = False):
+#        '''
+#        Fit the model via MCMC
+#        '''
+#        # set up
+#        self.E = E
+#        self.L = L
+#        self.D = D
+#        #self.log-lik-terms = np.empty(len(E))
+#        self.burn = burn
+#        self.thin = thin
+#        self.maxIter = samples * thin + burn
+#        self.batch_size = batch_size
+#        
+#        np.random.seed(random_seed)
+#        
+#        # initialize
+#        # 1) scores
+#        self.L, inds, self.muL, self.gammaL = initializeLinkedScore(self.L, self.linkInitialThreshold)
+#        self.D, self.indsMF, self.indsFM, self.muD, self.muNegD, self.gammaD = initializeDirectScore(self.D, inds)
+#        # 2) the PP
+#        self.E_MF, self.E_FM, self.gammaMF, self.gammaFM = initializePP(self.E, self.indsMF, self.indsFM)
+#        # 3) the MF surface
+#        X_MF = getPoints(self.E_MF)
+#        self.componentsMF, self.Z_MF = initializeGMM(X_MF, self.K)
+#        self.weightMF = updateMixtureWeight(self.Z_MF, self.weightPrior)
+#        # 4) the FM surface
+#        X_FM = getPoints(self.E_FM)
+#        self.componentsFM, self.Z_FM = initializeGMM(X_FM, self.K)
+#        self.weightFM = updateMixtureWeight(self.Z_FM, self.weightPrior)
+#        
+#        if(verbose):
+#            print('Initialization done!')
+#        
+#        # MCMC
+#        # 05/09 debug: hack it to fix everything else except E_MF, E_FM and see how it goes...
+#        for it in range(self.maxIter):
+#            ## 1. the score models
+#            # HACK it for debugging purposes:
+#            if debugHack:
+#                self.muL, self.gammaL = Settings['muL'], Settings['gammaL']
+#                self.muD, self.muNegD, self.gammaD = Settings['muD'], Settings['muNegD'], Settings['gammaD']
+#            else:
+#                self.muL, self.gammaL = updateLModel(self.L, self.E_MF, self.E_FM, self.muL, 
+#                                                     self.gammaL, self.ScoreGammaPrior)
+#                
+#                self.muD, self.muNegD, self.gammaD = updateDModel(self.D, self.E_MF, self.E_FM, 
+#                                                                  self.muD, self.muNegD, 
+#                                                                  self.gammaD, self.ScoreGammaPrior)                
+#                
+#            
+#            
+#            ## 2. the MF and FM point configurations
+#            ### make a copy of the current version first
+#            E_MF_old = copy(self.E_MF); E_FM_old = copy(self.E_FM)
+#            
+#            ### then propose change
+#            self.E_MF, self.E_FM, chosen, step = proposePP(self.E, self.E_MF, self.E_FM, self.batch_size)
+#            
+#            ### accept or reject
+#            ACC = "accepted"
+#            
+##            logLik_old = self.evalLikelihood(E_MF_old, E_FM_old, subset=chosen)
+##            logLik_propose = self.evalLikelihood(self.E_MF, self.E_FM, subset=chosen)
+#            
+##            N_MF_old = len(E_MF_old); N_FM_old = len(E_FM_old)
+##            N_MF = len(self.E_MF); N_FM = len(self.E_FM)
+##            
+##            logDiff = (logLik_propose - logLik_old + 
+##                       (N_MF - N_MF_old) * np.log(self.gammaMF) + 
+##                       (N_FM - N_FM_old) * np.log(self.gammaFM) -
+##                       np.sign(N_MF - N_MF_old) * np.log(range(min(N_MF,N_MF_old)+1,max(N_MF,N_MF_old)+1)).sum() -
+##                       np.sign(N_FM - N_FM_old) * np.log(range(min(N_FM,N_FM_old)+1,max(N_FM,N_FM_old)+1)).sum())
+##            
+#            # HACK 2: calculate log-lik on the whole dataset instead of on subset...
+#            logLik_old = self.evalLikelihood(E_MF_old, E_FM_old, subset=None)
+#            logLik_propose = self.evalLikelihood(self.E_MF, self.E_FM, subset=None)
+#            logDiff = logLik_propose - logLik_old
+#            
+#            # HACK 3: add a "random noise point" density component to the likelihood
+#            # assume an outside point comes from Unif([15,45] x [15,45])
+#            # NOTE: this only works with batch_size == 1 case!!
+#            if step == 'b':
+#                logDiff -= np.log(1/30 * 1/30)
+#            elif step == 'd':
+#                logDiff += np.log(1/30 * 1/30)
+#            else:
+#                pass
+#            
+#            if logDiff > 0:
+#                #self.accept += 1
+#                prob = 1
+#            else:
+#                draw = np.random.random_sample()
+#                prob = np.exp(logDiff)
+#                if draw < prob:
+#                    #self.accept += 1
+#                    pass
+#                else:
+#                    self.E_MF = E_MF_old; self.E_FM = E_FM_old
+#                    ACC = "rejected"
+#                    
+#            if ACC == "accepted":
+#                if step in self.accept:
+#                    self.accept[step] += 1
+#                else:
+#                    self.accept[step] = 1
+#                    
+#            if verbose:
+#                print("In iteration {}, acceptance prob. ={}, proposal type {} gets {}!".format(it, prob, step, ACC))
+#                
+#            self.indsMF = list(self.E_MF.keys())
+#            self.indsFM = list(self.E_FM.keys())
+#                    
+#            ## 3. Update gammaMF and gammaFM
+#            # Hack it for debugging...
+#            if debugHack:
+#                self.gammaMF, self.gammaFM = Settings['N_MF'], Settings['N_FM']
+#            else:
+#                self.gammaMF, self.gammaFM = updateGammaPP(self.E_MF, self.E_FM, self.PPGammaPrior)
+#            
+#            
+#            ## 4. Update the Gaussian Mixture Model for the densities
+#            ### MF surface
+#            X_MF = getPoints(self.E_MF)
+#            
+#            # Hack it for debugging...
+#            if debugHack:
+#                self.componentsMF = Settings['componentsMF']
+#                self.weightMF = Settings['weightMF']
+#                self.Z_MF = updateComponentIndicator(X_MF, self.weightMF, self.componentsMF)
+#            else:
+#                self.Z_MF = updateComponentIndicator(X_MF, self.weightMF, self.componentsMF)
+#                self.componentsMF = updateGaussianComponents(X_MF, self.Z_MF, 
+#                                                             self.componentsMF, 
+#                                                             self.muPrior, self.precisionPrior)
+#                self.weightMF = updateMixtureWeight(self.Z_MF, self.weightPrior)
+#            
+#            
+#            ### FM surface
+#            X_FM = getPoints(self.E_FM)
+#            
+#            # Hack it for debugging...
+#            if debugHack:
+#                self.componentsFM = Settings['componentsFM']
+#                self.weightFM = Settings['weightFM']
+#                self.Z_FM = updateComponentIndicator(X_FM, self.weightFM, self.componentsFM)
+#            else:
+#                self.Z_FM = updateComponentIndicator(X_FM, self.weightFM, self.componentsFM)
+#                self.componentsFM = updateGaussianComponents(X_FM, self.Z_FM, 
+#                                                             self.componentsFM, 
+#                                                             self.muPrior, self.precisionPrior)
+#                self.weightFM = updateMixtureWeight(self.Z_FM, self.weightPrior)
+#            
+#            ## 5. Save parameter in chains if...
+#            if (it >= burn) & ((it+1-burn) % thin == 0):
+#                self.chains['muL'].append(self.muL)
+#                self.chains['muD'].append(self.muD)
+#                self.chains['muNegD'].append(self.muNegD)
+#                self.chains['gammaL'].append(self.gammaL)
+#                self.chains['gammaD'].append(self.gammaD)
+#                self.chains['N_MF'].append(len(self.indsMF))
+#                self.chains['N_FM'].append(len(self.indsFM))
+#                self.chains['gammaMF'].append(self.gammaMF)
+#                self.chains['gammaFM'].append(self.gammaFM)
+#                self.chains['componentsMF'].append(self.componentsMF)
+#                self.chains['componentsFM'].append(self.componentsFM)
+#                self.chains['weightMF'].append(self.weightMF)
+#                self.chains['weightFM'].append(self.weightFM)
+#                
+#                if verbose:
+#                    print('Parameters saved at iteration {}/{}.'.format(it, self.maxIter))
+#            
+#        return
+#    
+#    def plotChains(self, param):
+#        if param.startswith('compo'):
+#            # don't deal with components right now...
+#            pass
+#        elif param.startswith('weight'):
+#            chain = np.array(self.chains[param])
+#            for k in range(self.K):
+#                plt.plot(chain[:,k],"-",label=str(k))
+#            plt.legend('upper right')
+#            plt.show()
+#        else:
+#            plt.plot(self.chains[param])
+#            plt.show()
+#            
+#        return
+#            
 
 #%%
 
 # try running the original model        
 
-Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
-      "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001},
-      "precisionGMM": {'df': 2, 'invScale': np.eye(2)},
-      "weight": np.ones(3),
-      "gammaPP": {'n0': 1, 'b0': 0.02}}  
-
-model = LatentPoissonGMM(Priors = Pr, K=3)
-
-## Some completely made-up data that won't follow the model at all
-#E = {i: (np.random.random_sample(),np.random.random_sample()) for i in range(100)}
-#L = (1-0.3)* np.random.random_sample(100) + 0.3
-#D = np.random.random_sample(100)
+#Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
+#      "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001},
+#      "precisionGMM": {'df': 2, 'invScale': np.eye(2)},
+#      "weight": np.ones(3),
+#      "gammaPP": {'n0': 1, 'b0': 0.02}}  
 #
-#model.fit(E,L,D, samples=2000, burn=0, random_seed = 71)
-# for this one: one of the event sets will eventually get empty...
-
-Settings = {'N_MF': 100, 'N_FM': 100, 
-            'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
-            'gammaL': 1, 'gammaD': 1, 
-            'weightMF': np.array([0.4, 0.3, 0.3]), 'weightFM': np.array([0.4, 0.3, 0.3]),
-            'componentsMF': [([40,40], np.diag([1/4,1/4])), ([25,25], np.diag([1/9,1/9])), 
-                             ([40,25], np.diag([1/4,1/9]))],
-            'componentsFM': [([40,40], np.diag([1/4,1/4])), ([25,25], np.diag([1/9,1/9])), 
-                             ([25,40], np.diag([1/9,1/4]))]}
-
-
-E, L, D = simulateLatentPoissonGMM(250, Settings)
-
-E_MF = {i:a for i,a in E.items() if i in range(50)}
-E_FM = {i:a[::-1] for i,a in E.items() if i in range(50,100)}
-
-# visualize a bit
-X = getPoints(E)
-plt.plot(X[:,0], X[:,1], "o")
-plt.show()
-
-plt.plot(L,"o")
-plt.show()
-
-plt.plot(D, "o")
-plt.show()
-
-# try to fit 
-model.fit(E, L, D, samples=3000, burn=0, random_seed = 71, batch_size=1, debugHack=False)
-
-# plot number of points in each process
-model.plotChains('N_MF')
-model.plotChains('N_FM')
-model.plotChains('weightMF')
-model.plotChains('weightFM')
-model.plotChains('muL')
-model.plotChains('muD')
-
-# check proposals
-print(model.accept) #{'s': 146, 'd': 206, 'b': 104}
+#model = LatentPoissonGMM(Priors = Pr, K=3)
+#
+### Some completely made-up data that won't follow the model at all
+##E = {i: (np.random.random_sample(),np.random.random_sample()) for i in range(100)}
+##L = (1-0.3)* np.random.random_sample(100) + 0.3
+##D = np.random.random_sample(100)
+##
+##model.fit(E,L,D, samples=2000, burn=0, random_seed = 71)
+## for this one: one of the event sets will eventually get empty...
+#
+#Settings = {'N_MF': 100, 'N_FM': 100, 
+#            'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
+#            'gammaL': 1, 'gammaD': 1, 
+#            'weightMF': np.array([0.4, 0.3, 0.3]), 'weightFM': np.array([0.4, 0.3, 0.3]),
+#            'componentsMF': [([40,40], np.diag([1/4,1/4])), ([25,25], np.diag([1/9,1/9])), 
+#                             ([40,25], np.diag([1/4,1/9]))],
+#            'componentsFM': [([40,40], np.diag([1/4,1/4])), ([25,25], np.diag([1/9,1/9])), 
+#                             ([25,40], np.diag([1/9,1/4]))]}
+#
+#
+#E, L, D = simulateLatentPoissonGMM(250, Settings)
+#
+#E_MF = {i:a for i,a in E.items() if i in range(50)}
+#E_FM = {i:a[::-1] for i,a in E.items() if i in range(50,100)}
+#
+## visualize a bit
+#X = getPoints(E)
+#plt.plot(X[:,0], X[:,1], "o")
+#plt.show()
+#
+#plt.plot(L,"o")
+#plt.show()
+#
+#plt.plot(D, "o")
+#plt.show()
+#
+## try to fit 
+#model.fit(E, L, D, samples=3000, burn=0, random_seed = 71, batch_size=1, debugHack=False)
+#
+## plot number of points in each process
+#model.plotChains('N_MF')
+#model.plotChains('N_FM')
+#model.plotChains('weightMF')
+#model.plotChains('weightFM')
+#model.plotChains('muL')
+#model.plotChains('muD')
+#
+## check proposals
+#print(model.accept) #{'s': 146, 'd': 206, 'b': 104}
 
 #%%
 # check GMM log density
@@ -424,7 +429,25 @@ print(model.accept) #{'s': 146, 'd': 206, 'b': 104}
 
 # UPDATED model class and inference method       
         
-from utilsH import *
+#from utilsH import *
+
+from utilsHupdate import *
+
+
+# just make sure the getProbVector function works properly!
+def getProbVector(p):
+    
+    # some "anti-infinity" truncation to address numerical issues
+    
+    p[p==np.inf] = 3000
+    p[p==-np.inf] = -3000
+    
+    p = np.exp(p - np.max(p))
+    
+    #print(p)
+    
+    return p/p.sum()
+
 
 class LatentPoissonHGMM:
     def __init__(self, Priors, K=3, linkThreshold=0.6):
@@ -659,18 +682,22 @@ class LatentPoissonHGMM:
                                                        self.muPrior, self.precisionPrior)
             
             
+            ## UPDATE 10/11/2020: if any set is empty, don't update
             # 4.1 MF surface
-            X_MF = X[self.indsMF,:]
-            self.Z[self.indsMF] = updateComponentIndicator(X_MF, self.weightMF, self.components)
-            self.weightMF = updateMixtureWeight(self.Z[self.indsMF], self.weightPrior)
+            if len(self.indsMF) > 0:
+                X_MF = X[self.indsMF,:]
+                self.Z[self.indsMF] = updateComponentIndicator(X_MF, self.weightMF, self.components)
+                self.weightMF = updateMixtureWeight(self.Z[self.indsMF], self.weightPrior)
             # 4.2 the FM surface
-            X_FM = X[self.indsFM,:]
-            self.Z[self.indsFM] = updateComponentIndicator(X_FM, self.weightFM, self.components)
-            self.weightFM = updateMixtureWeight(self.Z[self.indsFM], self.weightPrior)
+            if len(self.indsFM) > 0:
+                X_FM = X[self.indsFM,:]
+                self.Z[self.indsFM] = updateComponentIndicator(X_FM, self.weightFM, self.components)
+                self.weightFM = updateMixtureWeight(self.Z[self.indsFM], self.weightPrior)
             # 4.3 the outsiders
-            X_0 = X[self.inds0,:]
-            self.Z[self.inds0] = updateComponentIndicator(X_0, self.weight0, self.components)
-            self.weight0 = updateMixtureWeight(self.Z[self.inds0], self.weightPrior)
+            if len(self.inds0) > 0:
+                X_0 = X[self.inds0,:]
+                self.Z[self.inds0] = updateComponentIndicator(X_0, self.weight0, self.components)
+                self.weight0 = updateMixtureWeight(self.Z[self.inds0], self.weightPrior)
 
             
             ## 5. Save parameter in chains if...
@@ -695,138 +722,314 @@ class LatentPoissonHGMM:
             
         return
     
-    def plotChains(self, param):
+    def plotChains(self, param, s=None, savepath=None):
+        
+        # updated 10/11/2020: add more plotting functions 
+        # (inherited from the DPGMM version)
+        
+        
         if param.startswith('compo'):
-            # don't deal with components right now...
-            pass
+            
+            # 10/11/2020: adapted to the 3-surface case
+            
+            # a helper function for plotting
+            def plotSurface(dat, name, weights, components, savepath=None):
+                # get the min, max range
+                Amin = np.min(data); Amax = np.max(data)
+            
+                # make density contour plot
+                #Amin = 15.0; Amax = 50.0
+                x = np.linspace(Amin, Amax)
+                y = np.linspace(Amin, Amax)
+                X, Y = np.meshgrid(x, y)
+                XX = np.array([X.ravel(), Y.ravel()]).T
+            
+                Z = evalDensity(XX, weights, components, log=True)
+                Z = Z.reshape(X.shape)
+            
+                plt.contourf(X,Y,Z)
+            
+                # overlay with the predicted age-pair points
+                plt.scatter(data[:,0], data[:,1], c="black")
+            
+                plt.title('predicted log-density of the {} surface'.format(name))
+                plt.xlabel('transmitter age')
+                plt.ylabel('recipient age')
+                if savepath is not None:
+                    plt.savefig(savepath)
+                plt.show()
+                return
+            
+            # plot each surface one by one
+            chain = self.chains[param]
+            if s >= len(chain) or s is None:
+                s = -1
+            components = chain[s]
+            
+            # the component labels in the relevant iteration
+            C = self.chains['C'][s]
+            
+            # mapping of surface label and name
+            surfs = {0: '0', 1: 'MF', 2: 'FM'}
+            
+            for c in range(3):
+                # get the relevant data
+                if c%2 == 0:
+                    data = getPoints(self.E)[C==c,:]
+                else:
+                    # if FM surface, need to reverse age pair order
+                    data = getPoints(self.E)[C==c,:][:,(1,0)]
+                    
+                name = surfs[c]
+                weights = self.chains['weight'+name][s]
+                
+                # make the corresponding plot
+                plotSurface(data, name, weights, components, savepath)
+            
         elif param=="C":
-            # don't deal with C indicators either...
-            pass
+            # s: can serve as the starting point for querying the chain
+            
+            # 10/11/2020: adapted to the 3-surface case
+            
+            def tabulate(C):
+                counts = np.empty(shape=3)
+                for k in range(3):
+                    counts[k] = np.sum(C==k)
+                return counts
+            
+            if s is None or s<0 or s>=len(self.chain['C']):
+                s = 0
+                
+            Cs = np.array(self.chain['C'][s:])
+            all_counts = np.apply_along_axis(tabulate, 1, Cs)
+            Counts_mean = np.mean(all_counts,axis=0)
+            Counts_std = np.std(all_counts,axis=0)
+            
+            ind = np.arange(len(Counts_mean))
+            plt.bar(ind, Counts_mean, 0.5, yerr = Counts_std,
+                    error_kw=dict(lw=3, capsize=3, capthick=2))
+            plt.title('Number of points allocated to each type through the chain')
+            plt.xticks(ind, ('0', 'MF', 'FM'))
+            if savepath is not None:
+                plt.savefig(savepath)
+            plt.show()
+            
+            
         elif param.startswith('weight'):
             chain = np.array(self.chains[param])
             for k in range(self.K):
-                plt.plot(chain[:,k],"-",label=str(k))
-            plt.legend('upper right')
+                #this_label = 'comp '+str(k)
+                this_label = str(k)
+                plt.plot(chain[:,k],"-",label=this_label)
+            #plt.legend(loc='upper right')
+            plt.xlabel('Samples')
+            plt.title('Traceplot of {}'.format(param))
+            plt.legend()
+            if savepath is not None:
+                plt.savefig(savepath)
             plt.show()
+            
+            
         elif param.startswith('prob'):
             chain = np.array(self.chains[param])
             for h in range(3):
-                plt.plot(chain[:,h],"-",label=str(h))
-            plt.legend('upper right')
+                this_label = str(h)
+                plt.plot(chain[:,h],"-",label=this_label)
+            plt.legend(loc='upper right')
+            plt.title('Traceplot of surface allocation probs')
+            if savepath is not None:
+                plt.savefig(savepath)
             plt.show()
+            
         else:
             plt.plot(self.chains[param])
+            if savepath is not None:
+                plt.savefig(savepath)
+            
+            plt.title('Traceplot of {}'.format(param))
+            plt.xlabel('Samples')
+            if savepath is not None:
+                plt.savefig(savepath)
             plt.show()
             
         return
+        
 
+# 10/11/2020: commment out the old plotting code
+       
+#        if param.startswith('compo'):
+#            # don't deal with components right now...
+#            pass
+#        elif param=="C":
+#            # don't deal with C indicators either...
+#            pass
+#        elif param.startswith('weight'):
+#            chain = np.array(self.chains[param])
+#            for k in range(self.K):
+#                plt.plot(chain[:,k],"-",label=str(k))
+#            plt.legend('upper right')
+#            plt.show()
+#        elif param.startswith('prob'):
+#            chain = np.array(self.chains[param])
+#            for h in range(3):
+#                plt.plot(chain[:,h],"-",label=str(h))
+#            plt.legend('upper right')
+#            plt.show()
+#        else:
+#            plt.plot(self.chains[param])
+#            plt.show()
+#            
+#        return
 
-
- 
 #%%
 # try running the updated new model
- 
-Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
-      "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001},
-      "precisionGMM": {'df': 2, 'invScale': np.eye(2)},
-      "weight": np.ones(3), "probs": np.ones(3),
-      "gammaPP": {'n0': 1, 'b0': 0.02}}  
 
-model = LatentPoissonHGMM(Priors = Pr, K=3)
-
-## Some completely made-up data that won't follow the model at all
-#E = {i: (np.random.random_sample(),np.random.random_sample()) for i in range(100)}
-#L = (1-0.3)* np.random.random_sample(100) + 0.3
-#D = np.random.random_sample(100)
+#Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
+#      "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001},
+#      "precisionGMM": {'df': 2, 'invScale': np.eye(2)},
+#      "weight": np.ones(3), "probs": np.ones(3),
+#      "gammaPP": {'n0': 1, 'b0': 0.02}}  
 #
-#model.fit(E,L,D, samples=2000, burn=0, random_seed = 71)
-# for this one: one of the event sets will eventually get empty...
-
-Settings = {'N_MF': 100, 'N_FM': 100, 
-            'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
-            'gammaL': 1, 'gammaD': 1, 
-            'weightMF': np.array([0.4, 0.5, 0.1]), 'weightFM': np.array([0.4, 0.1, 0.5]),
-            'weight0': np.array([0.1,0.1,0.8]),
-            'components': [([40,40], np.diag([1/4,1/4])), ([25,25], np.diag([1/9,1/9])), 
-                             ([40,25], np.diag([1/4,1/9]))]}
-
-
-E, L, D = simulateLatentPoissonHGMM(250, Settings)
-
-E_MF = {i:a for i,a in E.items() if i in range(100)}
-E_FM = {i:a for i,a in E.items() if i in range(100,200)}
-
-# visualize a bit
-X = getPoints(E)
-plt.plot(X[:,0], X[:,1], "o")
-plt.show()
-
-plt.plot(L,"o")
-plt.show()
-
-plt.plot(D, "o")
-plt.show()
-
-# try to fit 
-model.fit(E, L, D, samples=3000, burn=0, random_seed = 71, debugHack=False)
-
-# plot number of points in each process
-model.plotChains('N_MF')
-model.plotChains('N_FM')
-model.plotChains('weightMF')
-model.plotChains('weightFM')
-model.plotChains('weight0')
-model.plotChains('muL')
-model.plotChains('muD')
+#model = LatentPoissonHGMM(Priors = Pr, K=3)
+#
+### Some completely made-up data that won't follow the model at all
+##E = {i: (np.random.random_sample(),np.random.random_sample()) for i in range(100)}
+##L = (1-0.3)* np.random.random_sample(100) + 0.3
+##D = np.random.random_sample(100)
+##
+##model.fit(E,L,D, samples=2000, burn=0, random_seed = 71)
+## for this one: one of the event sets will eventually get empty...
+#
+#
+#Settings = {'N_MF': 100, 'N_FM': 100, 
+#            'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
+#            'gammaL': 1, 'gammaD': 1, 
+#            'weightMF': np.array([0.4, 0.5, 0.1]), 'weightFM': np.array([0.4, 0.1, 0.5]),
+#            'weight0': np.array([0.1,0.1,0.8]),
+#            'components': [([40,40], np.diag([1/4,1/4])), ([25,25], np.diag([1/9,1/9])), 
+#                             ([40,25], np.diag([1/4,1/9]))]}
+#
+#
+#E, L, D = simulateLatentPoissonHGMM(250, Settings)
+#
+#E_MF = {i:a for i,a in E.items() if i in range(100)}
+#E_FM = {i:a for i,a in E.items() if i in range(100,200)}
+#
+## visualize a bit
+#X = getPoints(E)
+#plt.plot(X[:,0], X[:,1], "o")
+#plt.show()
+#
+#plt.plot(L,"o")
+#plt.show()
+#
+#plt.plot(D, "o")
+#plt.show()
+#
+## try to fit 
+#model.fit(E, L, D, samples=3000, burn=0, random_seed = 71, debugHack=False)
+#
+## plot number of points in each process
+#model.plotChains('N_MF')
+#model.plotChains('N_FM')
+#model.plotChains('weightMF')
+#model.plotChains('weightFM')
+#model.plotChains('weight0')
+#model.plotChains('muL')
+#model.plotChains('muD')
 
 
 #%%
 # try running the updated new model
 # a harder version
  
-Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
-      "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001},
-      "precisionGMM": {'df': 2, 'invScale': np.eye(2)},
-      "weight": np.ones(6), "probs": np.ones(3),
-      "gammaPP": {'n0': 1, 'b0': 0.02}}  
-
-model = LatentPoissonHGMM(Priors = Pr, K=6)
-
-## Some completely made-up data that won't follow the model at all
-#E = {i: (np.random.random_sample(),np.random.random_sample()) for i in range(100)}
-#L = (1-0.3)* np.random.random_sample(100) + 0.3
-#D = np.random.random_sample(100)
+#Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
+#      "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001},
+#      "precisionGMM": {'df': 2, 'invScale': np.eye(2)},
+#      "weight": np.ones(6), "probs": np.ones(3),
+#      "gammaPP": {'n0': 1, 'b0': 0.02}}  
 #
-#model.fit(E,L,D, samples=2000, burn=0, random_seed = 71)
-# for this one: one of the event sets will eventually get empty...
+#model = LatentPoissonHGMM(Priors = Pr, K=6)
+#
+### Some completely made-up data that won't follow the model at all
+##E = {i: (np.random.random_sample(),np.random.random_sample()) for i in range(100)}
+##L = (1-0.3)* np.random.random_sample(100) + 0.3
+##D = np.random.random_sample(100)
+##
+##model.fit(E,L,D, samples=2000, burn=0, random_seed = 71)
+## for this one: one of the event sets will eventually get empty...
+#
+#Settings = {'N_MF': 100, 'N_FM': 100, 
+#            'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
+#            'gammaL': 1, 'gammaD': 1, 
+#            'weightMF': np.array([0.6, 0.4, 0, 0, 0, 0]), 
+#            'weightFM': np.array([0.1, 0.4, 0.5, 0, 0, 0]),
+#            'weight0': np.array([0, 0, 0, 0.3, 0.3, 0.4]),
+#            'components': [([40,40], np.diag([1/4,1/4])), ([25,25], np.diag([1/9,1/9])), 
+#                             ([40,25], np.diag([1/4,1/9])), ([30,30], np.diag([1/9,1/9])),
+#                             ([35,20], np.diag([1/16,1/16])), ([35,35], np.diag([1/9,1/4]))]}
+#
+#
+#E, L, D = simulateLatentPoissonHGMM(250, Settings)
+#
+#E_MF = {i:a for i,a in E.items() if i in range(100)}
+#E_FM = {i:a for i,a in E.items() if i in range(100,200)}
+#
+## visualize a bit
+#X = getPoints(E)
+#plt.plot(X[:,0], X[:,1], "o")
+#plt.show()
+#
+#plt.plot(X[range(100),0], X[range(100),1], "o")
+#plt.show()
+#
+#plt.plot(X[range(100,200),0], X[range(100,200),1], "o")
+#plt.show()
+#
+#
+#plt.plot(L,"o")
+#plt.show()
+#
+#plt.plot(D, "o")
+#plt.show()
+#
+## try to fit 
+#model.fit(E, L, D, samples=3000, burn=0, random_seed = 71, debugHack=False)
+#
+## plot number of points in each process
+#model.plotChains('N_MF')
+#model.plotChains('N_FM')
+#model.plotChains('weightMF')
+#model.plotChains('weightFM')
+#model.plotChains('weight0')
+#model.plotChains('muL')
+#model.plotChains('muD')
+#model.plotChains('probs')
 
-Settings = {'N_MF': 100, 'N_FM': 100, 
-            'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
-            'gammaL': 1, 'gammaD': 1, 
-            'weightMF': np.array([0.6, 0.4, 0, 0, 0, 0]), 
-            'weightFM': np.array([0.1, 0.4, 0.5, 0, 0, 0]),
-            'weight0': np.array([0, 0, 0, 0.3, 0.3, 0.4]),
-            'components': [([40,40], np.diag([1/4,1/4])), ([25,25], np.diag([1/9,1/9])), 
-                             ([40,25], np.diag([1/4,1/9])), ([30,30], np.diag([1/9,1/9])),
-                             ([35,20], np.diag([1/16,1/16])), ([35,35], np.diag([1/9,1/4]))]}
 
+#%%
 
-E, L, D = simulateLatentPoissonHGMM(250, Settings)
+# update: 10/11/2020
+# try running the naive (fixed # of components) version on the "synthetic real" data
 
-E_MF = {i:a for i,a in E.items() if i in range(100)}
-E_FM = {i:a for i,a in E.items() if i in range(100,200)}
+import pandas as pd
 
-# visualize a bit
-X = getPoints(E)
-plt.plot(X[:,0], X[:,1], "o")
-plt.show()
+dat = pd.read_csv("../200928_data_not_unlike_real_data.csv")
 
-plt.plot(X[range(100),0], X[range(100),1], "o")
-plt.show()
+# filter out some "low linked prob" data points
 
-plt.plot(X[range(100,200),0], X[range(100,200),1], "o")
-plt.show()
+# a heuristic fix: only keep those not very close to 0 or 1
 
+dat = dat[(dat.POSTERIOR_SCORE_LINKED > 0.2) & (dat.POSTERIOR_SCORE_LINKED < 0.98) &
+          (dat.POSTERIOR_SCORE_MF > 0.02) & (dat.POSTERIOR_SCORE_MF < 0.98)]
+
+L = np.array(dat.POSTERIOR_SCORE_LINKED)
+D = np.array(dat.POSTERIOR_SCORE_MF)
+
+edges = np.array(dat[['MALE_AGE_AT_MID','FEMALE_AGE_AT_MID']])
+nr = edges.shape[0]
+
+E = dict(zip(range(nr), edges))
 
 plt.plot(L,"o")
 plt.show()
@@ -834,8 +1037,20 @@ plt.show()
 plt.plot(D, "o")
 plt.show()
 
-# try to fit 
-model.fit(E, L, D, samples=3000, burn=0, random_seed = 71, debugHack=False)
+
+#%%
+
+K = 8
+
+Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
+      "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001},
+      "precisionGMM": {'df': 2, 'invScale': np.eye(2)},
+      "weight": np.ones(K), "probs": np.ones(3),
+      "gammaPP": {'n0': 1, 'b0': 0.02}}  
+
+model = LatentPoissonHGMM(Priors = Pr, K=K)
+
+model.fit(E, L, D, samples=3000, burn=0, random_seed = 73, debugHack=False)
 
 # plot number of points in each process
 model.plotChains('N_MF')
@@ -845,4 +1060,32 @@ model.plotChains('weightFM')
 model.plotChains('weight0')
 model.plotChains('muL')
 model.plotChains('muD')
+model.plotChains('muNegD')
 model.plotChains('probs')
+
+model.plotChains('components', s=2800, savepath='3surface_components.pdf')
+
+
+# plot number of points in each process
+#model.plotChains('N_MF',savepath='N_MF_diffGMM.pdf')
+#model.plotChains('N_FM',savepath='N_FM_diffGMM.pdf')
+#model.plotChains('weightMF',savepath='weightMF_diffGMM.pdf')
+#model.plotChains('weightFM',savepath='weightFM_diffGMM.pdf')
+#model.plotChains('etaMF')
+#model.plotChains('gammaMF')
+#model.plotChains('muL')
+#model.plotChains('muD')
+#model.plotChains('muNegD')
+#model.plotChains('alpha_MF')
+#model.plotChains('alpha_FM')
+
+#model.plotChains('componentsFM', s=2800, savepath='FM_surface.pdf')
+#model.plotChains('componentsMF', s=2800, savepath='MF_surface.pdf')
+#
+#model.plotChains('componentsFM', s=2250, savepath='FM_surface.pdf')
+#model.plotChains('componentsMF', s=2250, savepath='MF_surface.pdf')
+
+
+## almost all points land in the FM surface (Prob(2) very close to 1 and it doesn't come back)
+
+#pkl.dump(model, file=open("Oct11_synData_3surface_3000iters.pkl",'wb'))

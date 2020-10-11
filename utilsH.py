@@ -58,12 +58,15 @@ def updateLModel(L, indsMF, indsFM, muL, gammaL, gammaPrior):
     gammaPrior: a dictionary of prior for gammaL, "nu0" and "sigma0"
     '''
     
+    # 10/11/2020 update: only update when MF+FM is non-empty
+    
     inds = list(indsMF) + list(indsFM)
     
-    mu_mean = np.mean(L[inds])
-    mu_std = 1/np.math.sqrt(len(inds) * gammaL)
+    if len(inds) > 0:
+        mu_mean = np.mean(L[inds])
+        mu_std = 1/np.math.sqrt(len(inds) * gammaL)
     
-    muL = truncnorm(a=(0-mu_mean)/mu_std, b=np.inf).rvs() * mu_std + mu_mean
+        muL = truncnorm(a=(0-mu_mean)/mu_std, b=np.inf).rvs() * mu_std + mu_mean
     
     #deMean = L
     deMean = copy(L)
@@ -157,16 +160,20 @@ def updateDModel(D, indsMF, indsFM, muD, muNegD, gammaD, gammaPrior):
     gammaPrior: a dictionary of prior for gammaL, "nu0" and "sigma0"
     '''
     
+    # 10/11/2020 update: only make updates on non-empty sets
+    
     indsMF = list(indsMF) 
     indsFM = list(indsFM)
     
-    muD_mean = np.mean(D[indsMF])
-    muD_std = 1/np.math.sqrt(len(indsMF) * gammaD)
-    muD = truncnorm(a=(0-muD_mean)/muD_std, b=np.inf).rvs() * muD_std + muD_mean
+    if len(indsMF) > 0:
+        muD_mean = np.mean(D[indsMF])
+        muD_std = 1/np.math.sqrt(len(indsMF) * gammaD)
+        muD = truncnorm(a=(0-muD_mean)/muD_std, b=np.inf).rvs() * muD_std + muD_mean
     
-    muNegD_mean = np.mean(D[indsFM])
-    muNegD_std = 1/np.math.sqrt(len(indsFM) * gammaD)
-    muNegD = truncnorm(a=-np.inf, b=(0-muNegD_mean)/muNegD_std).rvs() * muNegD_std + muNegD_mean
+    if len(indsFM) > 0:
+        muNegD_mean = np.mean(D[indsFM])
+        muNegD_std = 1/np.math.sqrt(len(indsFM) * gammaD)
+        muNegD = truncnorm(a=-np.inf, b=(0-muNegD_mean)/muNegD_std).rvs() * muNegD_std + muNegD_mean
     
     #deMean = D
     deMean = copy(D)
@@ -418,8 +425,16 @@ def updateGaussianComponents(X, Z, components, muPrior, precisionPrior):
     return components
 
 def getProbVector(p):
+    
+    # some "anti-infinity" truncation to address numerical issues
+    
+    p[p==np.inf] = 3000
+    p[p==-np.inf] = -3000
+    
     p = np.exp(p - np.max(p))
+    
     #print(p)
+    
     return p/p.sum()
 
 def updateComponentIndicator(X, weight, components):
@@ -488,6 +503,8 @@ def evalDensity(X, weight, components, log=True):
     
     if log:
         total_dens = np.log(total_dens)
+        
+    #print(total_dens)
         
     return total_dens
 #%% test
