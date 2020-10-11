@@ -410,6 +410,8 @@ class LatentPoissonDPGMM2:
             plt.title('predicted log-density of the {} surface'.format(suffix))
             plt.xlabel('transmitter age')
             plt.ylabel('recipient age')
+            if savepath is not None:
+                plt.savefig(savepath)
             plt.show()
  
         elif param=="C":
@@ -434,6 +436,8 @@ class LatentPoissonDPGMM2:
                     error_kw=dict(lw=3, capsize=3, capthick=2))
             plt.title('Number of points allocated to each type through the chain')
             plt.xticks(ind, ('MF0', 'FM0', 'MF', 'FM'))
+            if savepath is not None:
+                plt.savefig(savepath)
             plt.show()
             
             
@@ -466,6 +470,8 @@ class LatentPoissonDPGMM2:
             
             plt.title('Traceplot of {}'.format(param))
             plt.xlabel('Samples')
+            if savepath is not None:
+                plt.savefig(savepath)
             plt.show()
             
         return
@@ -616,26 +622,40 @@ Settings = {'N_MF': 80, 'N_FM': 70, 'N_MF0':20, 'N_FM0': 30,
 
 # V4
 # increase number of points
-Settings = {'N_MF': 160, 'N_FM': 120, 'N_MF0':40, 'N_FM0': 80, 
+Settings = {'N_MF': 160, 'N_FM': 120, 'N_MF0':40, 'N_FM0': 30, 
             'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
             'gammaL': 1, 'gammaD': 1, 
             'weightMF': np.array([0.5, 0.4, 0.1]), 'weightFM': np.array([0.6, 0.2, 0.2]),
             'componentsMF': [([40,40], np.diag([4,4])), ([30,20], np.diag([9,9])), 
                              ([25,25], np.diag([4,9]))],
-            'componentsFM': [([20,40], np.diag([4,4])), ([25,45], np.diag([9,9])), 
-                             ([25,40], np.diag([9,4]))]}
+            'componentsFM': [([20,40], np.diag([4,4])), ([30,45], np.diag([9,9])), 
+                             ([25,30], np.diag([9,4]))]}
 
 
 #%%
 E, L, D = simulateLatentPoissonGMM2(Settings)
 
-E_MF = {i:a for i,a in E.items() if i in range(80)}
-E_FM = {i:a[::-1] for i,a in E.items() if i in range(80,150)}
+E_MF = {i:a for i,a in E.items() if i in range(160)}
+E_FM = {i:a[::-1] for i,a in E.items() if i in range(160,280)}
 
 
 # visualize a bit
 X = getPoints(E)
 plt.plot(X[:,0], X[:,1], "o")
+plt.show()
+
+X_MF = getPoints(E_MF)
+plt.plot(X_MF[:,0], X_MF[:,1], "o")
+plt.xlim((12,45))
+plt.ylim((12,45))
+plt.title('MF surface ground truth')
+plt.show()
+
+X_FM = getPoints(E_FM)
+plt.plot(X_FM[:,0], X_FM[:,1], "o")
+plt.xlim((15,50))
+plt.ylim((15,50))
+plt.title('FM surface ground truth')
 plt.show()
 
 plt.plot(L,"o")
@@ -649,8 +669,8 @@ plt.show()
 model.fit(E, L, D, samples=3000, burn=0, random_seed = 89, debugHack=False)
 
 # plot number of points in each process
-model.plotChains('N_MF')
-model.plotChains('N_FM')
+model.plotChains('N_MF',savepath='N_MF_diffGMM.pdf')
+model.plotChains('N_FM',savepath='N_FM_diffGMM.pdf')
 model.plotChains('weightMF',savepath='weightMF_diffGMM.pdf')
 model.plotChains('weightFM',savepath='weightFM_diffGMM.pdf')
 model.plotChains('etaMF')
@@ -670,8 +690,72 @@ model.plotChains('alpha_FM')
 ### Based on V3
 ### As long as the components are somewhat different, it works!
 
-model.plotChains('componentsFM', s=2000, savepath='FM_surface.pdf')
-model.plotChains('componentsMF', s=2000, savepath='MF_surface.pdf')
+model.plotChains('componentsFM', s=2800, savepath='FM_surface.pdf')
+model.plotChains('componentsMF', s=2800, savepath='MF_surface.pdf')
 
 # save model to an object
-pkl.dum
+# pkl.dump(model, file=open("Aug29_V4_3000iters.pkl",'wb'))
+
+pkl.dump(model, file=open("Sept24_V4_3000iters.pkl",'wb'))
+
+#%%
+# load a previous model for plotting...
+#model = pkl.load(open("Aug29_V4_3000iters.pkl",'rb'))
+
+
+#%%
+
+# Oct 10, 2020
+# try it on real data
+
+import pandas as pd
+
+dat = pd.read_csv("../200928_data_not_unlike_real_data.csv")
+
+# filter out some "low linked prob" data points
+
+# a heuristic fix: only keep those not very close to 0 or 1
+
+dat = dat[(dat.POSTERIOR_SCORE_LINKED > 0.2) & (dat.POSTERIOR_SCORE_LINKED < 0.98) &
+          (dat.POSTERIOR_SCORE_MF > 0.02) & (dat.POSTERIOR_SCORE_MF < 0.98)]
+
+L = np.array(dat.POSTERIOR_SCORE_LINKED)
+D = np.array(dat.POSTERIOR_SCORE_MF)
+
+edges = np.array(dat[['MALE_AGE_AT_MID','FEMALE_AGE_AT_MID']])
+nr = edges.shape[0]
+
+E = dict(zip(range(nr), edges))
+
+plt.plot(L,"o")
+plt.show()
+
+plt.plot(D, "o")
+plt.show()
+
+#%%
+# try fitting the model on this dataset
+
+model.fit(E, L, D, samples=3000, burn=0, random_seed = 89, debugHack=False)
+
+# plot number of points in each process
+model.plotChains('N_MF',savepath='N_MF_diffGMM.pdf')
+model.plotChains('N_FM',savepath='N_FM_diffGMM.pdf')
+model.plotChains('weightMF',savepath='weightMF_diffGMM.pdf')
+model.plotChains('weightFM',savepath='weightFM_diffGMM.pdf')
+model.plotChains('etaMF')
+model.plotChains('gammaMF')
+model.plotChains('muL')
+model.plotChains('muD')
+model.plotChains('muNegD')
+model.plotChains('alpha_MF')
+model.plotChains('alpha_FM')
+
+model.plotChains('componentsFM', s=2800, savepath='FM_surface.pdf')
+model.plotChains('componentsMF', s=2800, savepath='MF_surface.pdf')
+
+model.plotChains('componentsFM', s=2250, savepath='FM_surface.pdf')
+model.plotChains('componentsMF', s=2250, savepath='MF_surface.pdf')
+
+
+pkl.dump(model, file=open("Oct10_synData_3000iters.pkl",'wb'))
