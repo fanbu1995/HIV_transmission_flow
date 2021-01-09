@@ -108,6 +108,9 @@ class LatentPoissonDPHGMM:
         self.thin = 1
         self.chains = {param: list() for param in self.params_to_record}
             # a dictionary for parameter samples
+        # 10/26/2020: also record the the likelihood in each iteration 
+        # (in order to extract MAP estimate)
+        self.chains['loglik'] = list()
             
     def evalLikelihood(self, subset=None):
         '''
@@ -136,7 +139,7 @@ class LatentPoissonDPHGMM:
         
         
         total = LLik + DLik + MFLik + FMLik + Lik0 + counts.dot(np.log(self.probs))
-        total += N * np.log(self.gamma) - np.log(range(N)).sum() - self.gamma
+        total += N * np.log(self.gamma) - np.log(range(1,N+1)).sum() - self.gamma
         
 #        if subset is None:
 #            to_add = (N_MF * np.log(self.gammaMF) + N_FM * np.log(self.gammaFM) - 
@@ -253,7 +256,23 @@ class LatentPoissonDPHGMM:
                 
                 self.muD, self.muNegD, self.gammaD = updateDModel(self.D, self.indsMF, self.indsFM, 
                                                                   self.muD, self.muNegD, 
-                                                                  self.gammaD, self.ScoreGammaPrior)                
+                                                                  self.gammaD, self.ScoreGammaPrior)  
+                
+                # 10/26/2020 try stuff
+                # 1) fix the value of muD and muNegD to salvage things
+                #self.muD = 0.5 # approximate thres = 0.622
+                #self.muNegD = -0.5
+                
+                # 2) truncate muD and muNegD at a non-zero value
+                # to stablize things
+                delta = 0.1
+                self.muD = self.muD if self.muD > delta else delta
+                self.muNegD = self.muNegD if self.muNegD < -delta else -delta
+                
+                # also make sure they are not too positive or negative
+                delta2 = 1.0
+                self.muD = self.muD if self.muD <= delta2 else delta2
+                self.muNegD = self.muNegD if self.muNegD >= -delta2 else -delta2
                 
             
             
@@ -325,8 +344,12 @@ class LatentPoissonDPHGMM:
                 self.chains['weight0'].append(self.weight0)
                 self.chains['alpha'].append(self.alpha)
                 
+                # 10/26/20: add loglik
+                log_lik = self.evalLikelihood()
+                self.chains['loglik'].append(log_lik)
+                
                 if verbose:
-                    print('Parameters saved at iteration {}/{}.'.format(it, self.maxIter))
+                    print('Parameters saved at iteration {}/{}. Log-likelihood={}'.format(it, self.maxIter, log_lik))
             
         return
     
@@ -341,9 +364,12 @@ class LatentPoissonDPHGMM:
             # 10/11/2020: adapted to the 3-surface case
             
             # a helper function for plotting
-            def plotSurface(dat, name, weights, components, savepath=None):
+            def plotSurface(data, name, weights, components, savepath=None):
                 # get the min, max range
                 Amin = np.min(data); Amax = np.max(data)
+                
+                # specify range
+                Amin = min(15,np.min(data)); Amax = max(50,np.max(data))
             
                 # make density contour plot
                 #Amin = 15.0; Amax = 50.0
@@ -361,8 +387,12 @@ class LatentPoissonDPHGMM:
                 plt.scatter(data[:,0], data[:,1], c="black")
             
                 plt.title('predicted log-density of the {} surface'.format(name))
-                plt.xlabel('transmitter age')
-                plt.ylabel('recipient age')
+                # 10/26/2020 fix: didn't reverse the order of age pair
+                # so plot male age and female age instead
+                #plt.xlabel('transmitter age')
+                #plt.ylabel('recipient age')
+                plt.xlabel('male age')
+                plt.ylabel('female age')
                 if savepath is not None:
                     plt.savefig(savepath)
                 plt.show()
@@ -382,11 +412,14 @@ class LatentPoissonDPHGMM:
             
             for c in range(3):
                 # get the relevant data
-                if c%2 == 0:
-                    data = getPoints(self.E)[C==c,:]
-                else:
-                    # if FM surface, need to reverse age pair order
-                    data = getPoints(self.E)[C==c,:][:,(1,0)]
+#                if c%2 == 0:
+#                    data = getPoints(self.E)[C==c,:]
+#                else:
+#                    # if FM surface, need to reverse age pair order
+#                    data = getPoints(self.E)[C==c,:][:,(1,0)]
+                # above: taken out 10/26/2020 because there has been no flip for the FM at all...
+                    
+                data = getPoints(self.E)[C==c,:]
                     
                 name = surfs[c]
                 weights = self.chains['weight'+name][s]
@@ -405,7 +438,7 @@ class LatentPoissonDPHGMM:
                     counts[k] = np.sum(C==k)
                 return counts
             
-            if s is None or s<0 or s>=len(self.chain['C']):
+            if s is None or s<0 or s>=len(self.chains['C']):
                 s = 0
                 
             Cs = np.array(self.chains['C'][s:])
@@ -462,6 +495,69 @@ class LatentPoissonDPHGMM:
             
         return
     
+    def getMeanSurface(self, st=200, en=2000, thin=1, m=15, M=50,
+                       plot=True, savepath=None):
+        '''
+        function to obtain the "mean" surface density for each surface
+        '''
+        
+        # mapping of surface label and name
+        surfs = {0: '0', 1: 'MF', 2: 'FM'}
+        
+        # point grids
+        x = np.linspace(m, M)
+        y = np.linspace(m, M)
+        X, Y = np.meshgrid(x, y)
+        XX = np.array([X.ravel(), Y.ravel()]).T
+            
+        def calDensity(s, which):
+            '''
+            get the surface density (in log) at iteration s, for type which(=0,1,2)
+            '''
+            weights = self.chains['weight'+surfs[which]][s]
+            components = self.chains['components'][s]
+            
+            Z = evalDensity(XX, weights, components, log=True)
+            Z = Z.reshape(X.shape)
+            
+            return Z
+        
+        for c in [0,1,2]:
+            # go through the selected iterations and accumulate
+            for s in range(st,en,thin):
+                Z = calDensity(s,c)
+                if s== st:
+                    dens_c = Z
+                else:
+                    dens_c = np.concatenate((dens_c, Z), axis=0)
+            # change shape       
+            dens_c = dens_c.reshape(len(range(st,en,thin)),Z.shape[0],Z.shape[1])
+            
+            # get mean and variance
+            dens_mean = np.apply_along_axis(np.mean, 0, dens_c)
+            dens_sd = np.apply_along_axis(np.std, 0, dens_c)
+            
+            # plot
+            if plot:
+                ## mean
+                plt.contourf(X,Y,dens_mean)
+                plt.title('posterior mean log-density of the {} surface'.format(surfs[c]))
+                plt.xlabel('male age')
+                plt.ylabel('female age')
+                if savepath is not None:
+                    plt.savefig(savepath+surfs[c]+'_mean_density.pdf')
+                plt.show()
+                
+                ## sd
+                plt.contourf(X,Y,dens_sd)
+                plt.title('posterior log-density std of the {} surface'.format(surfs[c]))
+                plt.xlabel('male age')
+                plt.ylabel('female age')
+                if savepath is not None:
+                    plt.savefig(savepath+surfs[c]+'_density_std.pdf')
+                plt.show()
+                
+        return
     
 #%%
 # update: 10/11/2020
@@ -471,12 +567,37 @@ import pandas as pd
 
 dat = pd.read_csv("../200928_data_not_unlike_real_data.csv")
 
+#%%
+# 10/26/2020 fix:
+# transform scores between interval [0.02, 0.98] to avoid spillover
+def shrinkScore(x, l=0.02, u=0.98):
+    '''
+    x: has to be numpy array
+    l: lower bound
+    u: upper bound
+    '''
+    return x * (u - l) + l
+
+#%%
+
 # filter out some "low linked prob" data points
 
 # a heuristic fix: only keep those not very close to 0 or 1
 
-dat = dat[(dat.POSTERIOR_SCORE_LINKED > 0.2) & (dat.POSTERIOR_SCORE_LINKED < 0.98) &
-          (dat.POSTERIOR_SCORE_MF > 0.02) & (dat.POSTERIOR_SCORE_MF < 0.98)]
+#dat = dat[(dat.POSTERIOR_SCORE_LINKED > 0.2) & (dat.POSTERIOR_SCORE_LINKED < 0.98) &
+#          (dat.POSTERIOR_SCORE_MF > 0.02) & (dat.POSTERIOR_SCORE_MF < 0.98)]
+
+
+# 10/26/2020 fix:
+# scale the linked scores and male-female scores within (0.02, 0.98)
+dat.POSTERIOR_SCORE_LINKED = shrinkScore(dat.POSTERIOR_SCORE_LINKED)
+dat.POSTERIOR_SCORE_MF = shrinkScore(dat.POSTERIOR_SCORE_MF)
+
+# then only keep linked scores that are > 0.2
+dat = dat[(dat.POSTERIOR_SCORE_LINKED > 0.2)]
+
+# leave us with 407 rows in total
+print(dat.shape)
 
 L = np.array(dat.POSTERIOR_SCORE_LINKED)
 D = np.array(dat.POSTERIOR_SCORE_MF)
@@ -492,7 +613,6 @@ plt.show()
 plt.plot(D, "o") # no super clear pattern
 plt.show()     
     
-    
 #%%
 
 #K = 10
@@ -504,30 +624,59 @@ Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
       #"weight": np.ones(K), 
       "probs": np.ones(3),
       "gammaPP": {'n0': 1, 'b0': 0.02},
-      "alpha": {'a': 2.0, 'b':3.0}}   
+      #"alpha": {'a': 2.0, 'b':3.0}}   
+      # 10/26/2020: try a prior for alpha to encourage less shrinkage (large alpha)
+      "alpha": {'a': 4.0, 'b': 1.0}} 
 
-model = LatentPoissonDPHGMM(Priors = Pr, K=3, Kmax = 10)
+model = LatentPoissonDPHGMM(Priors = Pr, K=3, Kmax = 8)
 
-model.fit(E, L, D, samples=3000, burn=0, random_seed = 89, debugHack=False)
+# try a Kmax=2 version
+#model = LatentPoissonDPHGMM(Priors = Pr, K=2, Kmax = 2)
+
+model.fit(E, L, D, samples=3000, burn=0, random_seed = 73, debugHack=False)
 
 model.plotChains('N_MF')
 model.plotChains('N_FM')
-model.plotChains('weightMF')
-model.plotChains('weightFM')
-model.plotChains('weight0')
-model.plotChains('muL')
 model.plotChains('muD')
 model.plotChains('muNegD')
+#model.plotChains('weightMF')
+#model.plotChains('weightFM')
+#model.plotChains('weight0')
+model.plotChains('muL')
 model.plotChains('gammaD')
+model.plotChains('gammaL')
 model.plotChains('probs')
 model.plotChains('alpha')
 
-model.plotChains('C', s=200)
+model.plotChains('C', s=2500)
 
-model.plotChains('components', s=2800, savepath='3surfaceDP_components.pdf')
+model.plotChains('components', s=2500)
+
+# plot the components at MAP
+model.plotChains('components', s=np.argmax(model.chains['loglik']))
+# !!! MAP corresponds to no points in FM (or MF) at all!
+
+# plot the "mean" and "std" of log-density on each surface
+model.getMeanSurface(st=500, en=3000, thin=10, m=15, M=50, plot=True, savepath=None)
 
 # what's happening:
 # DP tends to select very few components: 
 #     1 or 2 giant components on each surface (not much pattern)
 # again, all points move to one surface (this time MF, not FM - unstable behavior)
 # is there an un-identifiability issue??
+
+#%%
+# save results
+
+import pickle as pkl
+
+#pkl.dump(model, file=open("Oct11_synData_3surfaceDP_3000iters.pkl",'wb')) 
+
+pkl.dump(model, file=open("Oct26_synData_3surfaceDP_Kmax2_3000iters.pkl",'wb'))
+
+pkl.dump(model, file=open("Oct26_synData_3surfaceDP_Kmax2_muD0.5_3000iters.pkl",'wb'))
+
+# if fix muD = 0.5, muNegD = -0.5, it works kind of fine (both surface stable)
+#model2 = pkl.load(open("Oct26_synData_3surfaceDP_Kmax2_muD0.5_3000iters.pkl",'rb'))
+
+pkl.dump(model, file=open("Oct28_synData_3surfaceDP_Kmax8_muDrestrict_3000iters.pkl",'wb'))

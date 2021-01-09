@@ -125,8 +125,10 @@ def evalLLikelihood(L, indsMF, indsFM, muL, gammaL, subset=None, log=True):
         
 
 ## direction score
+## 01/06/2021 change: add a Dthres argument (default 0.5, same as before)
+##                    AND, do the subsetting BEFORE logit transform
     
-def initializeDirectScore(D, inds):
+def initializeDirectScore(D, inds, Dthres = 0.5):
     '''
     Initialize direction score stuff based on thresholding results of linked score;
     Returns:
@@ -134,16 +136,20 @@ def initializeDirectScore(D, inds):
         - indices of pairs that are selected in each point process
         - initial value of muNegD, muD, gammaD (inverse of sigma^2_d)
     D: length N linked scores of all pairs (in same order as L)
+    Dthres: the threshold for allocating points to MF and FM surfaces
+    
     '''
     
-    D = logit(D)
-    
+    # get MF and FM indices first
     inds = set(inds)
-    indsMF = inds & set(np.where(D > 0)[0])
+    indsMF = inds & set(np.where(D > Dthres)[0])
     indsFM = inds - indsMF
     
     indsMF = list(indsMF)
     indsFM = list(indsFM)
+    
+    # and then transform and get mixture stuff
+    D = logit(D)
     
     muD = np.mean(D[indsMF])
     muNegD = np.mean(D[indsFM])
