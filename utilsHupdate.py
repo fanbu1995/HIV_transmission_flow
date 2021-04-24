@@ -484,7 +484,7 @@ def updateOneComponent(X, mu, precision, muPrior, precisionPrior):
     Xsum = np.sum(X, axis=0)
     bn = muPrior['precision'].dot(muPrior['mean']) + precision.dot(Xsum)
     
-    mu = multivariate_normal(An_inv.dot(bn), An_inv).rvs()
+    mu = multivariate_normal(An_inv.dot(bn), An_inv, allow_singular=True).rvs()
     
     S_mu = np.matmul((X-mu).T, X-mu)
     
@@ -794,7 +794,7 @@ def evalDensity(X, weight, components, log=True):
     
     for k in range(K):
         mu, precision = components[k]
-        MVN = multivariate_normal(mu, inv(precision))
+        MVN = multivariate_normal(mu, inv(precision), allow_singular=True)
         mix_dens[:,k] = MVN.pdf(X)
         
     #print(mix_dens)
@@ -904,7 +904,7 @@ def simulateGMM(N, weight, components):
     data = None
     for k in range(len(weight)):
         if comp_counts[k] > 0:
-            data_k = np.random.multivariate_normal(components[k][0], inv(components[k][1]), comp_counts[k])
+            data_k = np.random.multivariate_normal(components[k][0], components[k][1], comp_counts[k])
             if data is None:
                 data = data_k
             else:

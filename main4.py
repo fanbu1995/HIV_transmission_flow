@@ -314,6 +314,9 @@ class LatentPoissonDPHGMM:
             else:
                 # fix the two centers for the D scores
                 self.muD, self.muNegD = D_centers
+                
+                # 01/09/2021: try fixing muL too...
+                # self.muL = 2.0
                     
                 # 10/26/2020 try stuff
                 # 1) fix the value of muD and muNegD to salvage things
@@ -506,6 +509,10 @@ class LatentPoissonDPHGMM:
                 # above: taken out 10/26/2020 because there has been no flip for the FM at all...
                     
                 data = getPoints(self.E)[C==c,:]
+                
+                # 01/09/2021: skip a surface if no point is allocated on it
+                if data.shape[0] == 0:
+                    continue
                     
                 name = surfs[c]
                 weights = self.chains['weight'+name][s]
@@ -708,7 +715,7 @@ plt.show()
 #%%
 
 
-# 01/09/2021: try with fixed muD and muNegD
+# 01/09/2021: try with fixed muD and muNegD (NOT fixed point allocation)
 
 #Kmax = 8
 
@@ -728,7 +735,7 @@ model = LatentPoissonDPHGMM(Priors = Pr, K=3, Kmax = 8)
 # try a Kmax=2 version
 #model = LatentPoissonDPHGMM(Priors = Pr, K=2, Kmax = 2)
 
-model.fit(E, L, D, samples=3000, burn=0, random_seed = 73, debugHack=False)
+model.fit(E, L, D, samples=3000, burn=0, random_seed = 42, debugHack=False)
 
 model.plotChains('N_MF')
 model.plotChains('N_FM')
@@ -749,29 +756,28 @@ model.plotChains('componentsMF', s=2500)
 model.plotChains('componentsFM', s=2500)
 
 # plot the components at MAP
-model.plotChains('components', s=np.argmax(model.chains['loglik']))
-# !!! MAP corresponds to no points in FM (or MF) at all!
+model.plotChains('componentsMF', s=np.argmax(model.chains['loglik']))
+model.plotChains('componentsFM', s=np.argmax(model.chains['loglik']))
 
 # plot the "mean" and "std" of log-density on each surface
 model.getMeanSurface(st=500, en=3000, thin=10, m=15, M=50, plot=True, savepath=None)
 
-# what's happening:
-# DP tends to select very few components: 
-#     1 or 2 giant components on each surface (not much pattern)
-# again, all points move to one surface (this time MF, not FM - unstable behavior)
-# is there an un-identifiability issue??
+# Problems:
+# somehow we always have one surface going to zero points....
+# sometimes it's 0, sometimes it's FM
+# Maybe that's an issue with the separate-3 surface model?
 
 
 #%%
 
-## 01/09/2021: another version with fixed point allocation
+## 01/09/2021: the version with fixed point allocation
 
 model2 = LatentPoissonDPHGMM(Priors = Pr, K=3, Kmax = 8)
 
 # try a Kmax=2 version
 #model = LatentPoissonDPHGMM(Priors = Pr, K=2, Kmax = 2)
 
-model2.fit(E, L, D, samples=3000, burn=0, random_seed = 73, debugHack=False, fixed_alloc= True)
+model2.fit(E, L, D, samples=3000, burn=0, random_seed = 83, debugHack=False, fixed_alloc= True)
 
 model2.plotChains('N_MF')
 model2.plotChains('N_FM')
@@ -789,11 +795,11 @@ model2.plotChains('alpha_MF')
 model2.plotChains('C', s=2500)
 
 model2.plotChains('componentsMF', s=2500)
-model2.plotChains('componentsFM', s=2500)
+# model2.plotChains('componentsFM', s=2500)
 
 # plot the components at MAP
-model2.plotChains('components', s=np.argmax(model.chains['loglik']))
-# !!! MAP corresponds to no points in FM (or MF) at all!
+model2.plotChains('componentsMF', s=np.argmax(model2.chains['loglik'])) # --> THIS looks reasonable!!!!
+# model2.plotChains('componentsFM', s=np.argmax(model2.chains['loglik']))
 
 # plot the "mean" and "std" of log-density on each surface
 model2.getMeanSurface(st=500, en=3000, thin=10, m=15, M=50, plot=True, savepath=None)
@@ -813,3 +819,6 @@ pkl.dump(model, file=open("Oct26_synData_3surfaceDP_Kmax2_muD0.5_3000iters.pkl",
 #model2 = pkl.load(open("Oct26_synData_3surfaceDP_Kmax2_muD0.5_3000iters.pkl",'rb'))
 
 pkl.dump(model, file=open("Oct28_synData_3surfaceDP_Kmax8_muDrestrict_3000iters.pkl",'wb'))
+
+# 01/09/2021: save the fixing threshold version
+pkl.dump(model2, file=open('Jan09_synData_fixThres_3surfaceDP_3000iters.pkl', 'wb'))
