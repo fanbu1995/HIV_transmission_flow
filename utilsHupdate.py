@@ -23,13 +23,17 @@ from copy import copy
 from numpy.random import default_rng
 rng = default_rng()
 
+## 09/15/2021 UPDATE
+## treat L=1 or D=1/0 cases specially
+## do not include those into the L or D score models
+
 #%%
 
 # 1-d Gaussian stuff (score model)
 
 ## linked score
 
-def initializeLinkedScore(L, initThres = 0.6):
+def initializeLinkedScore(L, initThres = 0.6, indsNoL = None):
     '''
     Initialize things based on thresholding on the linked score;
     Returns:
@@ -37,23 +41,32 @@ def initializeLinkedScore(L, initThres = 0.6):
         - indices of pairs that are selected in the point processes
         - initial value of muL, gammaL (inverse of sigma^2_l)
     L: length N linked scores of all pairs
+    indsNoL: indices of points excluced from L model
     '''
-    
+    all_inds = set(range(len(L)))
     inds = np.where(L > initThres)[0]
     
-    L = logit(L)
+    if indsNoL is not None:
+        all_inds = all_inds - set(indsNoL)
+        inds = list(set(inds) - set(indsNoL))
+    
+    all_inds = list(all_inds)
+    
+    L[all_inds] = logit(L[all_inds])
+    L[indsNoL] = 0 # fill in dummy 0's for those with L==1
     Thres = logit(initThres)
     
-    muL = np.mean(L[L > Thres])
+    Lsel = L[all_inds]
+    muL = np.mean(Lsel[Lsel > Thres])
     
-    deMean = np.where(L > Thres, L - muL, L)
+    deMean = np.where(Lsel > Thres, Lsel - muL, Lsel)
     
     gammaL = 1/np.mean(deMean ** 2)
     
     return L, inds, muL, gammaL
 
 
-def updateLModel(L, indsMF, indsFM, muL, gammaL, gammaPrior):
+def updateLModel(L, indsMF, indsFM, muL, gammaL, gammaPrior, indsNoL = None):
     '''
     Update linked score model (muL and gammaL) given the point configurations
     Returns muL and gammaL
@@ -61,11 +74,16 @@ def updateLModel(L, indsMF, indsFM, muL, gammaL, gammaPrior):
     indsMF: indices of points in the MF process
     indsFM: indices of points in the FM process
     gammaPrior: a dictionary of prior for gammaL, "nu0" and "sigma0"
+    indsNoL: indices of points excluced from L model
     '''
     
     # 10/11/2020 update: only update when MF+FM is non-empty
     
-    inds = list(indsMF) + list(indsFM)
+    # 09/15/2021 update
+    if indsNoL is not None:
+        inds = list(set(list(indsMF) + list(indsFM)) - set(indsNoL))
+    else:
+        inds = list(indsMF) + list(indsFM)
     
     if len(inds) > 0:
         mu_mean = np.mean(L[inds])
@@ -76,6 +94,11 @@ def updateLModel(L, indsMF, indsFM, muL, gammaL, gammaPrior):
     #deMean = L
     deMean = copy(L)
     deMean[inds] = deMean[inds] - muL
+    
+    if indsNoL is not None:
+        all_inds = list(set(range(len(L))) - set(indsNoL))
+        deMean = deMean[all_inds]
+    
     SS = np.sum(deMean ** 2)
     
     gammaL = np.random.gamma((gammaPrior['nu0'] + len(L))/2, 
@@ -83,7 +106,8 @@ def updateLModel(L, indsMF, indsFM, muL, gammaL, gammaPrior):
     
     return muL, gammaL
 
-def evalLLikelihood(L, indsMF, indsFM, muL, gammaL, subset=None, log=True):
+def evalLLikelihood(L, indsMF, indsFM, muL, gammaL, indsNoL = None, 
+                    subset=None, log=True):
     '''
     Evaluate the linked score component of the likelihood (on a subset of entries);
     Returns length len(L) (or len(subset)) array of (log-)likelihood
@@ -91,6 +115,7 @@ def evalLLikelihood(L, indsMF, indsFM, muL, gammaL, subset=None, log=True):
     indsMF: indices of points in the MF process
     indsFM: indices of points in the FM process
     muL, gammaL: parameters of the L model
+    indsNoL: indices of points excluded from the L score model (L=1 points) - for those return 0
     subset: list of SORTED indices (if None, then evaluate likelihood on all entries)
     log: bool, output log-likelihood?
     '''
@@ -109,6 +134,12 @@ def evalLLikelihood(L, indsMF, indsFM, muL, gammaL, subset=None, log=True):
         indsOut = list(set(indices) - set(inds))
         res = np.empty(len(L))
         
+    ## 09/15/2021 update
+    if indsNoL is not None:
+        indsNull = np.where(np.in1d(indices, indsNoL))[0]
+        indsIn = list(set(indsIn) - set(indsNoL))
+        indsOut = list(set(indsOut) - set(indsNoL))
+        
     sd = 1/np.math.sqrt(gammaL)  
     #logDensIn = norm(loc=muL, scale=sd).logpdf(L[indsIn]) if len(indsIn) > 0 else 
     if len(indsIn) > 0:
@@ -117,6 +148,9 @@ def evalLLikelihood(L, indsMF, indsFM, muL, gammaL, subset=None, log=True):
     if len(indsOut) > 0:
         logDensOut = norm(loc=0, scale=sd).logpdf(L[indsOut])
         res[np.searchsorted(indices, indsOut)] = logDensOut
+    ## then fill in those null entries (return 0 as loglik)
+    if indsNoL is not None:
+        res[indsNull] = 0
         
     if not log:
         res = np.exp(res)
@@ -128,7 +162,7 @@ def evalLLikelihood(L, indsMF, indsFM, muL, gammaL, subset=None, log=True):
 ## 01/06/2021 change: add a Dthres argument (default 0.5, same as before)
 ##                    AND, do the subsetting BEFORE logit transform
     
-def initializeDirectScore(D, inds, Dthres = 0.5):
+def initializeDirectScore(D, inds, Dthres = 0.5, indsNoD = None):
     '''
     Initialize direction score stuff based on thresholding results of linked score;
     Returns:
@@ -137,6 +171,7 @@ def initializeDirectScore(D, inds, Dthres = 0.5):
         - initial value of muNegD, muD, gammaD (inverse of sigma^2_d)
     D: length N linked scores of all pairs (in same order as L)
     Dthres: the threshold for allocating points to MF and FM surfaces
+    indsNoD: indices of points excluded from D model
     
     '''
     
@@ -145,11 +180,23 @@ def initializeDirectScore(D, inds, Dthres = 0.5):
     indsMF = inds & set(np.where(D > Dthres)[0])
     indsFM = inds - indsMF
     
+    all_inds = set(range(len(D)))
+    
+    ## 09/15/2021
+    if indsNoD is not None:
+        inds = inds - set(indsNoD)
+        all_inds = all_inds - set(indsNoD)
+        indsMF = indsMF - set(indsNoD)
+        indsFM = indsFM - set(indsNoD)
+        
     indsMF = list(indsMF)
     indsFM = list(indsFM)
+    inds = list(inds)
+    all_inds = list(all_inds)
     
     # and then transform and get mixture stuff
-    D = logit(D)
+    D[all_inds] = logit(D[all_inds])
+    D[indsNoD] = 0 # fill in 0 values at those NULL spots
     
     muD = np.mean(D[indsMF])
     muNegD = np.mean(D[indsFM])
@@ -160,8 +207,11 @@ def initializeDirectScore(D, inds, Dthres = 0.5):
     
     return D, indsMF, indsFM, muD, muNegD, gammaD
 
+## 09/15/2021:
+# make the fixed D centers play an explicit role inside the udpate function
 
-def updateDModel(D, indsMF, indsFM, muD, muNegD, gammaD, gammaPrior):
+def updateDModel(D, indsMF, indsFM, muD, muNegD, gammaD, gammaPrior, 
+                 fixmu=False, indsNoD = None):
     '''
     Update linked score model (muL and gammaL) given the point configurations
     Returns muD, muNegD, gammaD
@@ -169,27 +219,44 @@ def updateDModel(D, indsMF, indsFM, muD, muNegD, gammaD, gammaPrior):
     indsMF: indices of points in the MF process
     indsFM: indices of points in the FM process
     gammaPrior: a dictionary of prior for gammaL, "nu0" and "sigma0"
+    fixmu: True or False, if True, fix muD and muNegD without(!) any updating
+    indsNoD: indices of points excluded from D model
     '''
     
     # 10/11/2020 update: only make updates on non-empty sets
     
-    indsMF = list(indsMF) 
-    indsFM = list(indsFM)
+    if fixmu:
+        pass
+    else:
+        # update do the updating of muD and muNegD if the mu's are not fixed
+        if indsNoD is not None:
+            indsMF = list(set(indsMF) - set(indsNoD))
+            indsFM = list(set(indsFM) - set(indsNoD))
+        else:
+            indsMF = list(indsMF) 
+            indsFM = list(indsFM)
     
-    if len(indsMF) > 0:
-        muD_mean = np.mean(D[indsMF])
-        muD_std = 1/np.math.sqrt(len(indsMF) * gammaD)
-        muD = truncnorm(a=(0-muD_mean)/muD_std, b=np.inf).rvs() * muD_std + muD_mean
+        if len(indsMF) > 0:
+            muD_mean = np.mean(D[indsMF])
+            muD_std = 1/np.math.sqrt(len(indsMF) * gammaD)
+            muD = truncnorm(a=(0-muD_mean)/muD_std, b=np.inf).rvs() * muD_std + muD_mean
     
-    if len(indsFM) > 0:
-        muNegD_mean = np.mean(D[indsFM])
-        muNegD_std = 1/np.math.sqrt(len(indsFM) * gammaD)
-        muNegD = truncnorm(a=-np.inf, b=(0-muNegD_mean)/muNegD_std).rvs() * muNegD_std + muNegD_mean
+        if len(indsFM) > 0:
+            muNegD_mean = np.mean(D[indsFM])
+            muNegD_std = 1/np.math.sqrt(len(indsFM) * gammaD)
+            muNegD = truncnorm(a=-np.inf, b=(0-muNegD_mean)/muNegD_std).rvs() * muNegD_std + muNegD_mean
+     
+    # update gammaD as before
     
     #deMean = D
     deMean = copy(D)
     deMean[indsMF] = deMean[indsMF] - muD
     deMean[indsFM] = deMean[indsFM] - muNegD
+    
+    if indsNoD is not None:
+        all_inds = list(set(range(len(D))) - set(indsNoD))
+        deMean = deMean[all_inds]
+    
     SS = np.sum(deMean ** 2)
     
     gammaD = np.random.gamma((gammaPrior['nu0'] + len(D))/2, 
@@ -198,7 +265,8 @@ def updateDModel(D, indsMF, indsFM, muD, muNegD, gammaD, gammaPrior):
     return muD, muNegD, gammaD
 
 
-def evalDLikelihood(D, indsMF, indsFM, muD, muNegD, gammaD, subset=None, log=True):
+def evalDLikelihood(D, indsMF, indsFM, muD, muNegD, gammaD, indsNoD = None,
+                    subset=None, log=True):
     '''
     Evaluate the direction score component of the likelihood (on a subset of entries);
     Returns length len(D) (or len(subset)) array of (log-)likelihood
@@ -206,6 +274,7 @@ def evalDLikelihood(D, indsMF, indsFM, muD, muNegD, gammaD, subset=None, log=Tru
     indsMF: indices of points in the MF process
     indsFM: indices of points in the FM process
     muD, muNegD, gammaD: parameters of the D model
+    indsNoD: indices of points excluded from the D score model (D = 1 or 0) - for those return 0
     subset: list of SORTED indices (if None, then evaluate likelihood on all entries)
     log: bool, output log-likelihood?
     '''
@@ -225,6 +294,13 @@ def evalDLikelihood(D, indsMF, indsFM, muD, muNegD, gammaD, subset=None, log=Tru
         indsOut = list(set(indices) - (set(indsMF) | set(indsFM)))
         res = np.empty(len(D))
         
+    ## 09/15/2021
+    if indsNoD is not None:
+        indsNull = np.where(np.in1d(indices, indsNoD))[0]
+        indsMF = list(set(indsMF) - set(indsNoD))
+        indsFM = list(set(indsFM) - set(indsNoD))
+        indsOut = list(set(indsOut) - set(indsNoD))
+        
     sd = 1/np.math.sqrt(gammaD)  
 
     if len(indsMF) > 0:
@@ -236,6 +312,9 @@ def evalDLikelihood(D, indsMF, indsFM, muD, muNegD, gammaD, subset=None, log=Tru
     if len(indsOut) > 0:
         logDensOut = norm(loc=0, scale=sd).logpdf(D[indsOut])
         res[np.searchsorted(indices, indsOut)] = logDensOut
+    ## then fill in those null entries (return 0 as loglik)
+    if indsNoD is not None:
+        res[indsNull] = 0
         
     if not log:
         res = np.exp(res)

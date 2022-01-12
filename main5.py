@@ -6,6 +6,8 @@ Created on Sun Oct 11 15:35:05 2020
 @author: fan
 
 adapt "main3" to get a less flexible version
+
+further adapt "main4" to fix real data experiment issues
 """
 
 #%%
@@ -30,6 +32,12 @@ from utilsHupdate import *
 ## 09/05/2021: a new version with separate priors for gammaL and gammaD (for more control)
 
 ## 09/15/2021: try to put fixing muD and muNegD inside the update utils (and fix the D_centers entry order)
+
+## 09/15/2021 UPDATE (again):
+## treat extreme scores (0 or 1 in L or D) more carefully
+## (1) allocate L = 1 pairs all to the MF and FM surfaces (exclude them from the score model est.)
+## (2) allocate D = 0 pairs all to MF, and D = 1 pairs all to FM (exclude them from the score model est.)
+## (3) DO include those pairs in the spatial model
 
 
 # just make sure the getProbVector function works properly!
@@ -88,6 +96,16 @@ class LatentPoissonDPHGMM:
         self.indsMF = None # indices on the MF surface
         self.indsFM = None # indices on the FM surface
         self.inds0 = None # indices for the outsider points
+        ## 09/15/2021: indices that should not be included in L or D models
+        self.indsNoD = None
+        self.indsNoL = None
+        ## AND indices aht should rely on L or D models only for sampling indicator
+        ## 09/20/2021: adjust the LModelOnly to potential MF and potential FM's 
+        ##             and keep DModelOnly (but not use it) for now
+        #self.LModelOnly = None
+        self.potMF = None
+        self.potFM = None
+        self.DModelOnly = None
         #self.E_MF = None # event set on MF surface
         #self.E_FM = None # event set on FM surface
         #self.E_0 = None # event set on the outside
@@ -116,7 +134,8 @@ class LatentPoissonDPHGMM:
                                  'N_MF', 'N_FM', 'gamma', 'probs', 'C', 
                                  'componentsMF', 'componentsFM', 'components0', 
                                  'weightMF', 'weightFM', 'weight0',
-                                 'alpha_MF', 'alpha_FM', 'alpha_0']
+                                 'alpha_MF', 'alpha_FM', 'alpha_0',
+                                 'L', 'D']
         # log-likelihood
         #self.log-lik-terms = None # each pair's contribution to the log-likelihood
         self.log_lik = None # total log-likelihood
@@ -140,11 +159,14 @@ class LatentPoissonDPHGMM:
         # Right now: STUPID WAY - sum over individual entries
         # later might change
         
+        ## 09/15/2021: update likelihood eval (exclude points with extreme L or D values)
         LLik = np.sum(evalLLikelihood(self.L, self.indsMF, self.indsFM, self.muL, 
-                                      self.gammaL, subset=subset, log=True))
+                                      self.gammaL, indsNoL = self.indsNoL, 
+                                      subset=subset, log=True))
         DLik = np.sum(evalDLikelihood(self.D, self.indsMF, self.indsFM, 
                                       self.muD, self.muNegD, 
-                                      self.gammaD, subset=subset, log=True))
+                                      self.gammaD, indsNoD = self.indsNoD,
+                                      subset=subset, log=True))
         
         X = getPoints(self.E)
         N = len(self.E)
@@ -172,6 +194,9 @@ class LatentPoissonDPHGMM:
         Update the type indicator "C" for each point in the dataset
         Returns a length-N vector of indicators (values in 0, 1, 2)
         '''
+        
+        ## 09/15/2021 update: add in indices for those points with extreme D or L scores
+        ## (plug in 0 as their log lik. entries)
 
         N = len(self.E)
         indsall = list(range(N))
@@ -179,20 +204,26 @@ class LatentPoissonDPHGMM:
         condProbs = np.empty((N,3))
         
         # h=0 (all outside)
-        condProbs[:,0] = (evalLLikelihood(self.L, [], [], self.muL, self.gammaL) + 
-                 evalDLikelihood(self.D, [], [], self.muD, self.muNegD, self.gammaD) + 
+        condProbs[:,0] = (evalLLikelihood(self.L, [], [], self.muL, 
+                 self.gammaL, indsNoL = self.indsNoL) + 
+                 evalDLikelihood(self.D, [], [], self.muD, self.muNegD, 
+                                 self.gammaD, indsNoD = self.indsNoD) + 
                  evalDensity(getPoints(self.E), self.weight0, self.components0) +
                  np.log(self.probs[0]))
         
         # h=1 (all in MF)
-        condProbs[:,1] = (evalLLikelihood(self.L, indsall, [], self.muL, self.gammaL) + 
-                 evalDLikelihood(self.D, indsall, [], self.muD, self.muNegD, self.gammaD) + 
+        condProbs[:,1] = (evalLLikelihood(self.L, indsall, [], self.muL, 
+                 self.gammaL, indsNoL = self.indsNoL) + 
+                 evalDLikelihood(self.D, indsall, [], self.muD, self.muNegD, 
+                                 self.gammaD, indsNoD = self.indsNoD) + 
                  evalDensity(getPoints(self.E), self.weightMF, self.componentsMF) +
                  np.log(self.probs[1]))
         
         # h=2 (all in FM)
-        condProbs[:,2] = (evalLLikelihood(self.L, [], indsall, self.muL, self.gammaL) + 
-                 evalDLikelihood(self.D, [], indsall, self.muD, self.muNegD, self.gammaD) + 
+        condProbs[:,2] = (evalLLikelihood(self.L, [], indsall, self.muL, 
+                 self.gammaL, indsNoL = self.indsNoL) + 
+                 evalDLikelihood(self.D, [], indsall, self.muD, self.muNegD, 
+                                 self.gammaD, indsNoD = self.indsNoD) + 
                  evalDensity(getPoints(self.E), self.weightFM, self.componentsFM) +
                  np.log(self.probs[2]))
         
@@ -206,13 +237,17 @@ class LatentPoissonDPHGMM:
     
     def fit(self, E, L, D, samples = 1000, burn = 0, thin = 1, random_seed = 42, 
             verbose = True, debugHack = False, 
-            fixed_alloc = False, thresholds = [0.6,0.5],
-            D_centers = [0.5, -0.5]):
+            fixed_alloc = False, thresholds = [0.6,0.5], D_centers = [0.5, -0.5],
+            def_event_inds = [None, None], extreme_inds = [None, None], 
+            L_D_model_inds = [None, None, None]):
         '''
         Fit the model via MCMC
         fixed_alloc: whether or not using fixed allocation with thresholds
         thresholds: [threshold for L score, threshold for D score (> ... --> MF)]
         D_centers: [muD, muNegD] - fixed mixture centers for easier stability
+        def_event_inds: [def_MF, def_FM] - inds for points definitely inside MF / FM surface
+        extreme_inds: [ext_L, ext_D] - inds with extreme L or D scores
+        L_D_only_inds: [L_model_only, D_model_only] - inds that only depend on L or D models for sampling C
         '''
         # set up
         self.E = E
@@ -226,6 +261,12 @@ class LatentPoissonDPHGMM:
         
         np.random.seed(random_seed)
         
+        ## 09/15/2021: read in the indices for extreme L or D scores
+        self.indsNoL, self.indsNoD = extreme_inds
+        ## 09/20/2021 adjustment here
+        self.potMF, self.potFM, self.DModelOnly = L_D_model_inds
+        def_MF, def_FM = def_event_inds
+        
         # (Take care of all the gamma draws at the beginning???)
         
         
@@ -234,17 +275,25 @@ class LatentPoissonDPHGMM:
         ## 01/06/2021 change: add "fixed allocation" option
         if fixed_alloc:
             thresL, thresD = thresholds
-            self.L, inds, self.muL, self.gammaL = initializeLinkedScore(self.L, thresL)
-            self.D, self.indsMF, self.indsFM, self.muD, self.muNegD, self.gammaD = initializeDirectScore(self.D, inds, thresD)
+            self.L, inds, self.muL, self.gammaL = initializeLinkedScore(self.L, thresL, indsNoL = self.indsNoL)
+            self.D, self.indsMF, self.indsFM, self.muD, self.muNegD, self.gammaD = initializeDirectScore(self.D, inds, 
+                                                                                                         thresD, indsNoD = self.indsNoD)
         else:
-            self.L, inds, self.muL, self.gammaL = initializeLinkedScore(self.L, self.linkInitialThreshold)
-            self.D, self.indsMF, self.indsFM, self.muD, self.muNegD, self.gammaD = initializeDirectScore(self.D, inds)
+            self.L, inds, self.muL, self.gammaL = initializeLinkedScore(self.L, self.linkInitialThreshold, 
+                                                                        indsNoL = self.indsNoL)
+            self.D, self.indsMF, self.indsFM, self.muD, self.muNegD, self.gammaD = initializeDirectScore(self.D, inds,
+                                                                                                         indsNoD = self.indsNoD)
             
             ## 09/15/2021 update
             ## fix muD and muNegD if D_centers are specified
             if D_centers != None:
                 self.muD, self.muNegD = D_centers
-            
+                
+        ## 09/15/2021
+        ## combine indsMF & indsFM with def_MF & def_FM
+        if def_MF != None & def_FM != None:
+            self.indsMF = list(set(self.indsMF) | set(def_MF))
+            self.indsFM = list(set(self.indsFM) | set(def_FM))            
             
         # 2) the PP
         self.gamma, self.probs = initializePP(self.E, self.indsMF, self.indsFM)
@@ -315,7 +364,7 @@ class LatentPoissonDPHGMM:
             else:
                 ## 01/09/2021: fixed_alloc or fixed centers
                 self.muL, self.gammaL = updateLModel(self.L, self.indsMF, self.indsFM, self.muL, 
-                                                     self.gammaL, self.GammaLPrior)
+                                                     self.gammaL, self.GammaLPrior, indsNoL = self.indsNoL)
                 
             # 01/09/2021: deal with stuff separately based on settings
                 
@@ -323,7 +372,8 @@ class LatentPoissonDPHGMM:
                 # the inds and C are all fixed throughout, no need to update
                 self.muD, self.muNegD, self.gammaD = updateDModel(self.D, self.indsMF, self.indsFM, 
                                                                   self.muD, self.muNegD, 
-                                                                  self.gammaD, self.GammaDPrior)
+                                                                  self.gammaD, self.GammaDPrior, 
+                                                                  indsNoD = self.indsNoD)
             else:
                 # 09/15/2021 udpate
                 # fix the two centers for the D scores if specified
@@ -331,7 +381,7 @@ class LatentPoissonDPHGMM:
                 self.muD, self.muNegD, self.gammaD = updateDModel(self.D, self.indsMF, self.indsFM, 
                                                                   self.muD, self.muNegD, 
                                                                   self.gammaD, self.GammaDPrior,
-                                                                  fixmu = fix)
+                                                                  fixmu = fix, indsNoD = self.indsNoD)
                 
                 #self.muD, self.muNegD = D_centers
                 
@@ -359,6 +409,23 @@ class LatentPoissonDPHGMM:
         
                 ## 2.1 update event type allocation
                 self.updateTypeIndicator()
+                
+                ## 2.1.A make adjustments (allocate all definitive points to their surfaces now)
+                ## 09/15/2021
+                # make sure def_MF and def_FM pairs are included in indsMF and indsFM
+                if def_MF != None & def_FM != None:
+                    self.C[def_MF] = 1
+                    self.C[def_FM] = 2
+                    
+                ## 09/20/2021 adjustment
+                if potFM != None and potFM != None:
+                    not0 = set(np.nonzero(self.C)[0])
+                    # assign D = 0 and surface not 0 pairs to FM surface
+                    this_FM = list(not0 & set(self.potFM))
+                    self.C[this_FM] = 2
+                    # and similarly for D = 1 pairs
+                    this_MF = list(not0 & set(self.potMF))
+                    self.C[this_MF] = 1
         
                 ## 2.2 update probs
                 self.probs = updateProbs(self.C, self.probPrior)
@@ -367,6 +434,10 @@ class LatentPoissonDPHGMM:
                 self.indsMF = np.where(self.C == 1)[0]
                 self.indsFM = np.where(self.C == 2)[0]
                 self.inds0 = np.where(self.C == 0)[0]
+                
+                ## combine indsMF & indsFM with def_MF & def_FM
+                #self.indsMF = list(set(self.indsMF) | set(def_MF))
+                #self.indsFM = list(set(self.indsFM) | set(def_FM))
         
                 #self.E_MF = {pair: age for pair, age in self.E.items() if pair in self.indsMF}
                 #self.E_FM = {pair: age for pair, age in self.E.items() if pair in self.indsFM}
@@ -452,6 +523,9 @@ class LatentPoissonDPHGMM:
                 self.chains['alpha_MF'].append(self.alpha_MF)
                 self.chains['alpha_FM'].append(self.alpha_FM)
                 self.chains['alpha_0'].append(self.alpha_0)
+                ## keep track of L and D as well to see what's wrong
+                self.chains['L'].append(self.L)
+                self.chains['D'].append(self.D)
                 
                 # 10/26/20: add loglik
                 log_lik = self.evalLikelihood()
@@ -672,9 +746,9 @@ class LatentPoissonDPHGMM:
 # update: 10/11/2020
 # try running the 3-surface version with DP on the "synthetic real" data
 
-import pandas as pd
-
-dat = pd.read_csv("../200928_data_not_unlike_real_data.csv")
+#import pandas as pd
+#
+#dat = pd.read_csv("../200928_data_not_unlike_real_data.csv")
 
 #%%
 # 08/31/2021
@@ -686,24 +760,24 @@ dat = pd.read_csv('../Rakai_data.csv')
 #%%
 # 10/26/2020 fix:
 # transform scores between interval [0.02, 0.98] to avoid spillover
-def shrinkScore(x, l=0.02, u=0.98):
-    '''
-    x: has to be numpy array
-    l: lower bound
-    u: upper bound
-    '''
-    return x * (u - l) + l
+#def shrinkScore(x, l=0.02, u=0.98):
+#    '''
+#    x: has to be numpy array
+#    l: lower bound
+#    u: upper bound
+#    '''
+#    return x * (u - l) + l
 
 #%%
 # 09/12/2021 fix:
 # try transforming the MF scores to make them closer to 0 or 1 (except for those in the middle chunk)
-def pushScore(x, l = 0.4, u = 0.6, pw = 2):
-    if x < l:
-        return x**pw
-    elif x > u:
-        return 1-(1-x)**pw
-    else:
-        return x
+#def pushScore(x, l = 0.4, u = 0.6, pw = 2):
+#    if x < l:
+#        return x**pw
+#    elif x > u:
+#        return 1-(1-x)**pw
+#    else:
+#        return x
 
 #%%
 
@@ -718,9 +792,31 @@ def pushScore(x, l = 0.4, u = 0.6, pw = 2):
 # 10/26/2020 fix:
 # 09/12/2021:
 ### filter out linkage scores first before shrinking it 
+        
+# 09/15/2021 update
+# re-try real data with the updated treatment of 0/1 scores
 
 # only keep linked scores that are > 0.2
-dat = dat[(dat.POSTERIOR_SCORE_LINKED > 0.2)]   
+dat = dat[(dat.POSTERIOR_SCORE_LINKED > 0.2)]
+
+## 09/15/2021:
+# specially treat points with L=1 or D=1/0
+ext_L = np.where(dat.POSTERIOR_SCORE_LINKED == 1)[0]   
+ext_D = np.where((dat.POSTERIOR_SCORE_MF == 0) | (dat.POSTERIOR_SCORE_MF == 1))[0]
+
+def_MF = np.where((dat.POSTERIOR_SCORE_LINKED == 1) & (dat.POSTERIOR_SCORE_MF > 0.6))[0]
+def_FM = np.where((dat.POSTERIOR_SCORE_LINKED == 1) & (dat.POSTERIOR_SCORE_MF < 0.4))[0]
+
+## 09/20/2021: differentiate between D=0 and D=1 cases when L < 1
+## when a pair like this is NOT assigned to 0 surface by the L score, 
+## assign it directly to FM if D=0, and to MF if D=1
+
+#L_model_only = np.where(((dat.POSTERIOR_SCORE_MF == 0) | (dat.POSTERIOR_SCORE_MF == 1)) & 
+#                        (dat.POSTERIOR_SCORE_LINKED < 1))[0]
+potMF = np.where((dat.POSTERIOR_SCORE_MF == 1) & (dat.POSTERIOR_SCORE_LINKED < 1))[0]
+potFM = np.where((dat.POSTERIOR_SCORE_MF == 0) & (dat.POSTERIOR_SCORE_LINKED < 1))[0]
+D_model_only = np.where((dat.POSTERIOR_SCORE_LINKED == 1) & (dat.POSTERIOR_SCORE_MF < 0.6) & 
+                        (dat.POSTERIOR_SCORE_MF > 0.4))[0]
 
 ## 09/12/2021:
 ## also try to remove data with  POSTERIOR_SCORE_MF exactly 0 or 1 
@@ -730,20 +826,20 @@ dat = dat[(dat.POSTERIOR_SCORE_LINKED > 0.2)]
 #dat = dat[(dat.POSTERIOR_SCORE_MF < 1) & (dat.POSTERIOR_SCORE_MF > 0)]
 
 # scale the linked scores and male-female scores within (0.02, 0.98)
-dat.POSTERIOR_SCORE_LINKED = shrinkScore(dat.POSTERIOR_SCORE_LINKED)
-dat.POSTERIOR_SCORE_MF = shrinkScore(dat.POSTERIOR_SCORE_MF)
+#dat.POSTERIOR_SCORE_LINKED = shrinkScore(dat.POSTERIOR_SCORE_LINKED)
+#dat.POSTERIOR_SCORE_MF = shrinkScore(dat.POSTERIOR_SCORE_MF)
 
 # 09/12/2021:
 ## try pushing the D scores more towards the 0/1 boundaries to create more separation
 # dat.POSTERIOR_SCORE_MF = np.array([pushScore(x, pw=2) for x in dat.POSTERIOR_SCORE_MF])
 
-# leave us with 527 rows in total
+# leave us with 526 rows in total (filter with L > 0.2 first before shrinking)
 print(dat.shape)
 
 L = np.array(dat.POSTERIOR_SCORE_LINKED)
 D = np.array(dat.POSTERIOR_SCORE_MF)
 
-print(len(np.where(L > 0.6)[0])) # 364 with L > 0.6
+print(len(np.where(L > 0.6)[0])) # 365 with L > 0.6
 D_sel = D[np.where(L > 0.6)[0]]
 print(len(np.where(D_sel > 0.5)[0])) # 198 with D > 0.5 (among those rows with L > 0.6)
 
@@ -788,7 +884,7 @@ plt.show()
 ## if it's not ridiculously strong, then pretty much same as before (MF surface vanishes)
 
 Pr = {"gammaL": {'nu0': 2, 'sigma0': 1}, # the previous default prior setting for score gamma's
-      "gammaD": {'nu0': 2, 'sigma0': 1}, # trying strong prior (to shrink the mixture spread...)
+      "gammaD": {'nu0': 2, 'sigma0': 1}, # trying this first (to shrink the mixture spread...)
       "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001,
                 'covariance': np.eye(2)*10000},
       "precisionGMM": {'df': 2, 'invScale': np.eye(2), 'Scale': np.eye(2)},
@@ -804,10 +900,12 @@ model = LatentPoissonDPHGMM(Priors = Pr, K=3, Kmax = 8)
 # try a Kmax=2 version
 #model = LatentPoissonDPHGMM(Priors = Pr, K=2, Kmax = 2)
 
-# 08/31/2021: try using closer pre-specified D center values (with only 1500 iters)
-#             try farther apart D center values (tried 0.8, 1.0)
-model.fit(E, L, D, samples=2000, burn=0, random_seed = 73, debugHack=False, 
-          D_centers = [1.8, -1.5])
+# 09/15/2021: try new trick , start with few iters
+# 09/20/2021: adjustment with slight argument change in fit function
+
+model.fit(E, L, D, samples=3000, burn=0, random_seed = 73, debugHack=False, 
+          D_centers = [1.5, -1.5], def_event_inds = [def_MF, def_FM], 
+          extreme_inds = [ext_L, ext_D], L_D_model_inds = [potMF, potFM, D_model_only])
 
 model.plotChains('N_MF')
 model.plotChains('N_FM')
@@ -822,7 +920,7 @@ model.plotChains('gammaL')
 model.plotChains('probs')
 #model.plotChains('alpha_MF')
 
-model.plotChains('C', s=2500)
+model.plotChains('C', s=1500)
 
 #model.plotChains('componentsMF', s=2500)
 #model.plotChains('componentsFM', s=1000)
@@ -835,7 +933,7 @@ model.plotChains('components0', s=np.argmax(model.chains['loglik']))
 # plot the "mean" and "std" of log-density on each surface
 #model.getMeanSurface(st=500, en=3000, thin=10, m=15, M=50, plot=True, savepath=None)
 
-model.getMeanSurface(st=500, en=len(model.chains['componentsMF']), 
+model.getMeanSurface(st=1000, en=len(model.chains['loglik']), 
                      thin=10, m=15, M=50, plot=True, savepath=None)
 
 # Problems:
@@ -850,12 +948,15 @@ model.getMeanSurface(st=500, en=len(model.chains['componentsMF']),
 ## 08/31/2021: do this on real data with previous default setting
 ##             also try a Kmax = 10 version
 
+## 09/20/2021: re-run fixed alloc version with this adaptation
 model2 = LatentPoissonDPHGMM(Priors = Pr, K=3, Kmax = 8)
 
 # try a Kmax=2 version
 #model = LatentPoissonDPHGMM(Priors = Pr, K=2, Kmax = 2)
 
-model2.fit(E, L, D, samples=3000, burn=0, random_seed = 83, debugHack=False, fixed_alloc= True)
+model2.fit(E, L, D, samples=3000, burn=0, random_seed = 83, debugHack=False, 
+           fixed_alloc= True, def_event_inds = [def_MF, def_FM], 
+          extreme_inds = [ext_L, ext_D], L_D_model_inds = [potMF, potFM, D_model_only])
 
 model2.plotChains('N_MF')
 model2.plotChains('N_FM')
@@ -872,19 +973,20 @@ model2.plotChains('alpha_MF')
 
 model2.plotChains('C', s=2500)
 
-model2.plotChains('componentsMF', s=2500)
+#model2.plotChains('componentsMF', s=2500)
 # model2.plotChains('componentsFM', s=2500)
 
 # plot the components at MAP
 ## 08/31/2021: save plots of what I got today...
-model2.plotChains('componentsMF', s=np.argmax(model2.chains['loglik']), 
-                  savepath = '../Aug31_realData_fixThres_MF_MAP.pdf') # --> THIS looks reasonable!!!!
-model2.plotChains('componentsFM', s=np.argmax(model2.chains['loglik']),
-                  savepath = '../Aug31_realData_fixThres_FM_MAP.pdf')
+## 09/20/2021: add burn-in for the MAP estimates
+burn = 200
+model2.plotChains('componentsMF', s=np.argmax(model2.chains['loglik'][burn:])+burn) # --> THIS looks reasonable!!!!
+model2.plotChains('componentsFM', s=np.argmax(model2.chains['loglik'][burn:])+burn)
+model2.plotChains('components0', s=np.argmax(model2.chains['loglik'][burn:])+burn)
 
 # plot the "mean" and "std" of log-density on each surface
-model2.getMeanSurface(st=1000, en=len(model.chains['componentsMF']), thin=10, m=15, M=50, plot=True, 
-                      savepath='../Aug31_realData_fixThres_')
+model2.getMeanSurface(st=1000, en=len(model.chains['componentsMF']), thin=10, m=15, M=50, plot=True)#, 
+                      #savepath='../Aug31_realData_fixThres_')
 
 #%%
 # save results
@@ -905,6 +1007,7 @@ pkl.dump(model, file=open("Oct28_synData_3surfaceDP_Kmax8_muDrestrict_3000iters.
 # 01/09/2021: save the fixing threshold version
 pkl.dump(model2, file=open('Jan09_synData_fixThres_3surfaceDP_3000iters.pkl', 'wb'))
 
+
 #%%
 
 # 08/31/2021: save results from [real data] experiments
@@ -916,6 +1019,9 @@ pkl.dump(model2, file=open('Aug31_realData_fixThres_3000iters.pkl', 'wb'))
 ## save another try...
 pkl.dump(model2, file=open('Aug31_realData_fixThres_3000iters_try2.pkl', 'wb'))
 
+# 09/20/2021: save today's version
+pkl.dump(model2, file=open('Sep20_realData_fixThres_3000iters.pkl', 'wb'))
+
 # with D centers fixed (but not point allocation)
 ## D centers = +- 0.8
 pkl.dump(model, file=open('Aug31_realData_D0.8_2000iters.pkl', 'wb'))
@@ -923,9 +1029,17 @@ pkl.dump(model, file=open('Aug31_realData_D0.8_2000iters.pkl', 'wb'))
 ## D centers = +- 1.0
 pkl.dump(model, file=open('Aug31_realData_D1.0_2000iters.pkl', 'wb'))
 
-## 09/15/2021 save another one
-## D centers = -1.5, +1.8
-pkl.dump(model, file=open('Sep15_realData_D1.51.8_2000iters.pkl', 'wb'))
+## 09/15/2021 try special treatment of 0/1 scores
+pkl.dump(model, file=open('Sep15_realData_specTreat_D1.5_3000iters.pkl', 'wb'))
+
+## 09/15/2021 another try
+pkl.dump(model, file=open('Sep15_realData_specTreat_D1.6-1.4_2500iters.pkl', 'wb'))
+
+## 09/21/2021 try again
+pkl.dump(model, file=open('Sep20_realData_specTreat_D1.6-1.4_2500iters.pkl', 'wb'))
+
+## another one
+pkl.dump(model, file=open('Sep20_realData_specTreat_D1.5_3000iters.pkl', 'wb'))
 
 
 
@@ -991,7 +1105,7 @@ def getGridDensity(chains, surface, which, lb=15.5, ub=49.5, num = 35, log=False
         return dens_mean
     else:
         # get a specific iter
-        assert type(which) == int
+        assert isinstance(which, np.integer)
         return calDensity(which)
         
 
@@ -1014,3 +1128,21 @@ np.savetxt('../MF_surface_midpoints_mean_fixAlloc.txt', Z_MF)
 
 Z_FM = getGridDensity(model2.chains, 'FM', 'mean')
 np.savetxt('../FM_surface_midpoints_mean_fixAlloc.txt', Z_FM)
+
+## 09/16/2021
+# 2. get a version of semi-fixed alloc (spec. treat. D=[1.6,-1.4], also D=[1.5,-1.5])
+## (1) get a particular iter result that I like
+s = np.argmax(model.chains['loglik'])
+Z_MF = getGridDensity(model.chains, 'MF', s)
+np.savetxt('../MF_surface_midpoints_MAP_specTreat2.txt', Z_MF)
+
+Z_FM = getGridDensity(model.chains, 'FM', s)
+np.savetxt('../FM_surface_midpoints_MAP_specTreat2.txt', Z_FM)
+
+## (2) get the mean surfaces
+Z_MF = getGridDensity(model.chains, 'MF', 'mean', st=1000)
+np.savetxt('../MF_surface_midpoints_mean_specTreat2.txt', Z_MF)
+
+Z_FM = getGridDensity(model.chains, 'FM', 'mean', st=1000)
+np.savetxt('../FM_surface_midpoints_mean_specTreat2.txt', Z_FM)
+

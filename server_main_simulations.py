@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Sun Oct 11 15:35:05 2020
+Created on Mon Apr  5 23:15:38 2021
 
 @author: fan
-
-adapt "main3" to get a less flexible version
 """
 
 #%%
 
-# implement the Dirichlet process version of 3-surface model
+# 04/23/2021: modified to run 100-round simulations on server
+
+
+
+#%%
+
+# 04/05/2021: run simulation experiments of the DPGMM model (3 surface one)
 import os
 #os.chdir('/Users/fan/Documents/Research_and_References/HIV_transmission_flow/')
 
 # 10/11/2020: changed working directory
-os.chdir('/Users/fan/Documents/Research_and_References/HIV_transmission_flow/HIV_transmission_flow/')
+#os.chdir('/Users/fan/Documents/Research_and_References/HIV_transmission_flow/HIV_transmission_flow/')
 
 from copy import copy#, deepcopy
 
@@ -26,10 +30,6 @@ from utilsHupdate import *
 
 
 ## 01/09/2021: a version with 3 separate surfaces (separate components and weights)
-
-## 09/05/2021: a new version with separate priors for gammaL and gammaD (for more control)
-
-## 09/15/2021: try to put fixing muD and muNegD inside the update utils (and fix the D_centers entry order)
 
 
 # just make sure the getProbVector function works properly!
@@ -60,9 +60,7 @@ class LatentPoissonDPHGMM:
             - "precisionGMM": prior dictionary for the precision matrices in Gaussian Mixture;
                 need "df" and "invScale"
             - "weight": prior vector (length K) for Gaussian Mixture weight;
-            - "gammaL": prior dictionary for inverse variance of the linkage (K) score;
-                need "nu0" and "sigma0"
-            - "gammaD": prior dictionary for inverse variance of the linkage (K) score;
+            - "gammaScore": prior dictionary for inverse variance of the score models;
                 need "nu0" and "sigma0"
             - "alpha": prior for the DP precision; need "a" and "b"
         '''
@@ -72,9 +70,7 @@ class LatentPoissonDPHGMM:
         self.K = K
         self.Kmax = Kmax
         # prior part
-        #self.ScoreGammaPrior = Priors["gammaScore"]
-        self.GammaLPrior = Priors["gammaL"]
-        self.GammaDPrior = Priors["gammaD"]
+        self.ScoreGammaPrior = Priors["gammaScore"]
         self.muPrior = Priors["muGMM"]
         self.precisionPrior = Priors["precisionGMM"]
         #self.weightPrior = Priors["weight"]
@@ -239,13 +235,6 @@ class LatentPoissonDPHGMM:
         else:
             self.L, inds, self.muL, self.gammaL = initializeLinkedScore(self.L, self.linkInitialThreshold)
             self.D, self.indsMF, self.indsFM, self.muD, self.muNegD, self.gammaD = initializeDirectScore(self.D, inds)
-            
-            ## 09/15/2021 update
-            ## fix muD and muNegD if D_centers are specified
-            if D_centers != None:
-                self.muD, self.muNegD = D_centers
-            
-            
         # 2) the PP
         self.gamma, self.probs = initializePP(self.E, self.indsMF, self.indsFM)
         self.C = np.zeros(N)
@@ -315,25 +304,23 @@ class LatentPoissonDPHGMM:
             else:
                 ## 01/09/2021: fixed_alloc or fixed centers
                 self.muL, self.gammaL = updateLModel(self.L, self.indsMF, self.indsFM, self.muL, 
-                                                     self.gammaL, self.GammaLPrior)
+                                                     self.gammaL, self.ScoreGammaPrior)
+                
+                self.muD, self.muNegD, self.gammaD = updateDModel(self.D, self.indsMF, self.indsFM, 
+                                                                  self.muD, self.muNegD, 
+                                                                  self.gammaD, self.ScoreGammaPrior)  
                 
             # 01/09/2021: deal with stuff separately based on settings
                 
             if fixed_alloc:
                 # the inds and C are all fixed throughout, no need to update
-                self.muD, self.muNegD, self.gammaD = updateDModel(self.D, self.indsMF, self.indsFM, 
-                                                                  self.muD, self.muNegD, 
-                                                                  self.gammaD, self.GammaDPrior)
+                pass
             else:
-                # 09/15/2021 udpate
-                # fix the two centers for the D scores if specified
-                fix = (D_centers != None)
-                self.muD, self.muNegD, self.gammaD = updateDModel(self.D, self.indsMF, self.indsFM, 
-                                                                  self.muD, self.muNegD, 
-                                                                  self.gammaD, self.GammaDPrior,
-                                                                  fixmu = fix)
-                
+                # fix the two centers for the D scores
                 #self.muD, self.muNegD = D_centers
+                
+                # 04/05/2021: be honest and not fix anything...
+                pass
                 
                 # 01/09/2021: try fixing muL too...
                 # self.muL = 2.0
@@ -534,6 +521,27 @@ class LatentPoissonDPHGMM:
                 # make the corresponding plot
                 plotSurface(data, name, weights, components, savepath)
             
+#            for c in range(3):
+#                # get the relevant data
+##                if c%2 == 0:
+##                    data = getPoints(self.E)[C==c,:]
+##                else:
+##                    # if FM surface, need to reverse age pair order
+##                    data = getPoints(self.E)[C==c,:][:,(1,0)]
+#                # above: taken out 10/26/2020 because there has been no flip for the FM at all...
+#                    
+#                data = getPoints(self.E)[C==c,:]
+#                
+#                # 01/09/2021: skip a surface if no point is allocated on it
+#                if data.shape[0] == 0:
+#                    continue
+#                    
+#                name = surfs[c]
+#                weights = self.chains['weight'+name][s]
+#                
+#                # make the corresponding plot
+#                plotSurface(data, name, weights, components, savepath)
+            
         elif param=="C":
             # s: can serve as the starting point for querying the chain
             
@@ -668,127 +676,97 @@ class LatentPoissonDPHGMM:
                 
         return
     
-#%%
-# update: 10/11/2020
-# try running the 3-surface version with DP on the "synthetic real" data
 
-import pandas as pd
-
-dat = pd.read_csv("../200928_data_not_unlike_real_data.csv")
 
 #%%
-# 08/31/2021
-# try real Rakai data: 
+# setup for simulation experiments
+import pickle as pkl
 
-import pandas as pd
-dat = pd.read_csv('../Rakai_data.csv')
+os.chdir('/hpc/home/fb75/trans_flow/')
+
+array_id = sys.argv[1]
+
+seed = int(array_id)
+
 
 #%%
-# 10/26/2020 fix:
-# transform scores between interval [0.02, 0.98] to avoid spillover
-def shrinkScore(x, l=0.02, u=0.98):
-    '''
-    x: has to be numpy array
-    l: lower bound
-    u: upper bound
-    '''
-    return x * (u - l) + l
+# useful functions
 
-#%%
-# 09/12/2021 fix:
-# try transforming the MF scores to make them closer to 0 or 1 (except for those in the middle chunk)
-def pushScore(x, l = 0.4, u = 0.6, pw = 2):
-    if x < l:
-        return x**pw
-    elif x > u:
-        return 1-(1-x)**pw
-    else:
-        return x
-
-#%%
-
-# filter out some "low linked prob" data points
-
-# a heuristic fix: only keep those not very close to 0 or 1
-
-#dat = dat[(dat.POSTERIOR_SCORE_LINKED > 0.2) & (dat.POSTERIOR_SCORE_LINKED < 0.98) &
-#          (dat.POSTERIOR_SCORE_MF > 0.02) & (dat.POSTERIOR_SCORE_MF < 0.98)]
-
-
-# 10/26/2020 fix:
-# 09/12/2021:
-### filter out linkage scores first before shrinking it 
-
-# only keep linked scores that are > 0.2
-dat = dat[(dat.POSTERIOR_SCORE_LINKED > 0.2)]   
-
-## 09/12/2021:
-## also try to remove data with  POSTERIOR_SCORE_MF exactly 0 or 1 
-## (there are some people like that making things messy)
-## and see if the mess gets resolved
-
-#dat = dat[(dat.POSTERIOR_SCORE_MF < 1) & (dat.POSTERIOR_SCORE_MF > 0)]
-
-# scale the linked scores and male-female scores within (0.02, 0.98)
-dat.POSTERIOR_SCORE_LINKED = shrinkScore(dat.POSTERIOR_SCORE_LINKED)
-dat.POSTERIOR_SCORE_MF = shrinkScore(dat.POSTERIOR_SCORE_MF)
-
-# 09/12/2021:
-## try pushing the D scores more towards the 0/1 boundaries to create more separation
-# dat.POSTERIOR_SCORE_MF = np.array([pushScore(x, pw=2) for x in dat.POSTERIOR_SCORE_MF])
-
-# leave us with 527 rows in total
-print(dat.shape)
-
-L = np.array(dat.POSTERIOR_SCORE_LINKED)
-D = np.array(dat.POSTERIOR_SCORE_MF)
-
-print(len(np.where(L > 0.6)[0])) # 364 with L > 0.6
-D_sel = D[np.where(L > 0.6)[0]]
-print(len(np.where(D_sel > 0.5)[0])) # 198 with D > 0.5 (among those rows with L > 0.6)
-
-## With real data
-## after "pre-processing"
-## 527 rows, 364 with L > 0.6
-## among those L > 0.6, 198 rows with D > 0.5
-
-edges = np.array(dat[['MALE_AGE_AT_MID','FEMALE_AGE_AT_MID']])
-nr = edges.shape[0]
-
-E = dict(zip(range(nr), edges))
-
-plt.plot(L,"o")
-plt.show()
-
-plt.plot(D, "o") # no super clear pattern
-plt.show() 
-
-# plot age pair patterns
-X = getPoints(E)
-plt.plot(X[:,0], X[:,1], "o")
-plt.show() 
-
-# save this processed dataset for use in R
-#dat.to_csv('../Rakai_data_processed.csv',index=False, index_label=False)
+# (1) function to plot proportions of allocations (and show MF vs FM)
+# with 95% credible intervals
+def plotProps(Cs, savepath=None):
     
+    def tabulate(C):
+        counts = np.empty(shape=2)
+        for k in range(1,3):
+            counts[k-1] = np.sum(C==k)/np.sum(C!=0)
+        return counts
+                
+    #Cs = np.array(self.chains['C'][s:])
+    all_counts = np.apply_along_axis(tabulate, 1, Cs)
+    Counts_mean = np.mean(all_counts,axis=0)
+    Counts_std = np.std(all_counts,axis=0)
+    Counts_CI = np.quantile(all_counts,[0.025,0.975], axis=0)
+    
+    ## subtract the mean to get the errorbar width
+    Counts_bars = copy(Counts_CI)
+    Counts_bars[0,:] = Counts_mean - Counts_bars[0,:]
+    Counts_bars[1,:] = Counts_bars[1,:] - Counts_mean
+    
+    ind = np.arange(len(Counts_mean))
+    plt.bar(ind, Counts_mean, 0.4, yerr = list(Counts_bars),
+            error_kw=dict(lw=3, capsize=10, capthick=3), 
+            color=["#F8766D", "#7CAE00"])
+#    plt.errorbar(ind, Counts_mean, yerr = list(Counts_bars), 
+#                 fmt='o', capthick=5)
+    plt.title('Proportions of transmission events (w/ 95% CI)')
+    plt.xticks(ind, ('MF', 'FM'))
+    plt.ylim(0,0.65)
+    if savepath is not None:
+        plt.savefig(savepath)
+    plt.show()
+    
+    return Counts_CI
+
+
+#  (2) plot weights of younger men vs older men
+def plotWeights(W, top=2, oldInd=0, savepath=None):
+    # default: only plot the top 2 components (one is younger, one is older)
+    # W: model.chain['weightMF'], for example
+    chain = np.array(W)[:,:top]
+    w_means = np.mean(chain, axis=0)
+    w_CI = np.quantile(chain, [0.025,0.975], axis=0)
+    
+    w_bars = copy(w_CI)
+    w_bars[0,:] = w_means - w_bars[0,:]
+    w_bars[1,:] = w_bars[1,:] - w_means
+    
+    if oldInd == 0:
+        # put "younger" to the left
+        w_bars = w_bars[:,::-1]
+        w_means = w_means[::-1]
+    
+    ind = np.arange(len(w_means))
+    plt.bar(ind, w_means, 0.4, yerr=list(w_bars),
+            error_kw=dict(lw=3, capsize=10, capthick=3),
+            color=["#7CAE00","#00BFC4"])
+    plt.title('Proportions of transmissions from younger v.s. older men (w/ 95% CI)')
+    plt.xticks(ind, ('younger','older'))
+         
+    if savepath is not None:
+        plt.savefig(savepath)
+    plt.show()          
+    
+    return
+
 #%%
 
-
-# 01/09/2021: try with fixed muD and muNegD (NOT fixed point allocation)
-
-# 08/31/2021: Do this with real data too (with previous default setting)
-
-#Kmax = 8
-
-# 09/05/2021: UPDATE
-## now: have separate priors for gammaL and gammaD
-## AND make gammaD prior stronger to try to keep 
-
-## I can make the gammaD prior REALLY strong, but that will squash away the 0 surface completely...
-## if it's not ridiculously strong, then pretty much same as before (MF surface vanishes)
-
-Pr = {"gammaL": {'nu0': 2, 'sigma0': 1}, # the previous default prior setting for score gamma's
-      "gammaD": {'nu0': 2, 'sigma0': 1}, # trying strong prior (to shrink the mixture spread...)
+# simulation experiment settings
+    
+# Do the two settings 100 times each
+        
+# priors
+Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
       "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001,
                 'covariance': np.eye(2)*10000},
       "precisionGMM": {'df': 2, 'invScale': np.eye(2), 'Scale': np.eye(2)},
@@ -798,219 +776,109 @@ Pr = {"gammaL": {'nu0': 2, 'sigma0': 1}, # the previous default prior setting fo
       #"alpha": {'a': 2.0, 'b':3.0}}   
       # 10/26/2020: try a prior for alpha to encourage less shrinkage (large alpha)
       "alpha": {'a': 4.0, 'b': 1.0}} 
+    
 
-model = LatentPoissonDPHGMM(Priors = Pr, K=3, Kmax = 8)
+# the total number of "events" in data
+N = 400
 
-# try a Kmax=2 version
-#model = LatentPoissonDPHGMM(Priors = Pr, K=2, Kmax = 2)
+if seed <= 100:
+    
+    # V1: equal portion of MF and FM, LESS transmission from younger men (~25) than older men (~35)
+    Settings = {'N_MF': 150, 'N_FM': 150,
+                'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
+                'gammaL': 1, 'gammaD': 1, 
+                'weightMF': np.array([0.6, 0.3, 0.05, 0.05, 0]), 
+                'weightFM': np.array([0.05, 0.05, 0.6, 0, 0.3]),
+                'weight0': np.array([0.05, 0.05, 0.05, 0.8, 0.05]),
+                'components': [([35,20], np.diag([9,4])), ([25,20], np.diag([4,4])), 
+                               ([40,35], np.diag([4,9])), ([30,30],np.diag([25,25])),
+                               ([40,25],np.diag([9,9]))]}
+else:
+    
+    # V2: 60-40 MF and FM, MORE transmissions from youner men (~25) than older men (~35)
+    Settings = {'N_MF': 180, 'N_FM': 120,
+                 'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
+                 'gammaL': 1, 'gammaD': 1, 
+                 'weightMF': np.array([0.3, 0.6, 0.05, 0.05, 0]), 
+                 'weightFM': np.array([0.05, 0.05, 0.6, 0, 0.3]),
+                 'weight0': np.array([0.05, 0.05, 0.05, 0.8, 0.05]),
+                 'components': [([35,20], np.diag([9,4])), ([25,20], np.diag([4,4])), 
+                                ([40,35], np.diag([4,9])), ([30,30],np.diag([25,25])),
+                                ([45,35],np.diag([9,9]))]}
+    
 
-# 08/31/2021: try using closer pre-specified D center values (with only 1500 iters)
-#             try farther apart D center values (tried 0.8, 1.0)
-model.fit(E, L, D, samples=2000, burn=0, random_seed = 73, debugHack=False, 
-          D_centers = [1.8, -1.5])
+#%%
 
-model.plotChains('N_MF')
-model.plotChains('N_FM')
+# Simulate data
+np.random.seed(seed + 367)
+
+E, L, D = simulateLatentPoissonHGMM(N, Settings)   
+
+#%%
+## visualize a bit
+#E_MF = {i:a for i,a in E.items() if i in range(150)}
+#E_FM = {i:a[::-1] for i,a in E.items() if i in range(150,300)}
+#
+## visualize a bit
+#X = getPoints(E)
+#plt.plot(X[:,0], X[:,1], "o")
+#plt.show()
+#
+#X_MF = getPoints(E_MF)
+#plt.plot(X_MF[:,0], X_MF[:,1], "o")
+#plt.xlim((15,50))
+#plt.ylim((15,50))
+#plt.title('MF surface ground truth')
+#plt.show()
+#
+#X_FM = getPoints(E_FM)
+#plt.plot(X_FM[:,0], X_FM[:,1], "o")
+#plt.xlim((15,50))
+#plt.ylim((15,50))
+#plt.title('FM surface ground truth')
+#plt.show() 
+
+#%%
+
+# Inference
+
+model = LatentPoissonDPHGMM(Priors = Pr, K=3, Kmax = 10)
+
+model.fit(E, L, D, samples=1500, burn=500, random_seed = seed, debugHack=False)
+
+#model.plotChains('N_MF')
+#model.plotChains('N_FM')
 #model.plotChains('muD')
 #model.plotChains('muNegD')
-#model.plotChains('weightMF')
-#model.plotChains('weightFM')
-#model.plotChains('weight0')
-model.plotChains('muL')
-model.plotChains('gammaD')
-model.plotChains('gammaL')
-model.plotChains('probs')
+##model.plotChains('weightMF')
+##model.plotChains('weightFM')
+##model.plotChains('weight0')
+#model.plotChains('muL')
+#model.plotChains('gammaD')
+#model.plotChains('gammaL')
+#model.plotChains('probs')
 #model.plotChains('alpha_MF')
-
-model.plotChains('C', s=2500)
-
-#model.plotChains('componentsMF', s=2500)
-#model.plotChains('componentsFM', s=1000)
-
-# plot the components at MAP
-model.plotChains('componentsMF', s=np.argmax(model.chains['loglik']))
-model.plotChains('componentsFM', s=np.argmax(model.chains['loglik']))
-model.plotChains('components0', s=np.argmax(model.chains['loglik']))
-
-# plot the "mean" and "std" of log-density on each surface
-#model.getMeanSurface(st=500, en=3000, thin=10, m=15, M=50, plot=True, savepath=None)
-
-model.getMeanSurface(st=500, en=len(model.chains['componentsMF']), 
-                     thin=10, m=15, M=50, plot=True, savepath=None)
-
-# Problems:
-# somehow we always have one surface going to zero points....
-# sometimes it's 0, sometimes it's FM
-# Maybe that's an issue with the separate-3 surface model?
+#
+#model.plotChains('C', s=500)
+#
+##model.plotChains('componentsMF', s=1000)
+#
+## plot the components at MAP
+#model.plotChains('componentsMF', s=np.argmax(model.chains['loglik']))
+#model.plotChains('componentsFM', s=np.argmax(model.chains['loglik']))        
 
 
 #%%
 
-## 01/09/2021: the version with fixed point allocation
-## 08/31/2021: do this on real data with previous default setting
-##             also try a Kmax = 10 version
+# save things to pickle
+pkl.dump(model, file=open("model_"+str(array_id)+".pkl",'wb'))
 
-model2 = LatentPoissonDPHGMM(Priors = Pr, K=3, Kmax = 8)
-
-# try a Kmax=2 version
-#model = LatentPoissonDPHGMM(Priors = Pr, K=2, Kmax = 2)
-
-model2.fit(E, L, D, samples=3000, burn=0, random_seed = 83, debugHack=False, fixed_alloc= True)
-
-model2.plotChains('N_MF')
-model2.plotChains('N_FM')
-model2.plotChains('muD')
-model2.plotChains('muNegD')
-#model.plotChains('weightMF')
-#model.plotChains('weightFM')
-#model.plotChains('weight0')
-model2.plotChains('muL')
-model2.plotChains('gammaD')
-model2.plotChains('gammaL')
-model2.plotChains('probs')
-model2.plotChains('alpha_MF')
-
-model2.plotChains('C', s=2500)
-
-model2.plotChains('componentsMF', s=2500)
-# model2.plotChains('componentsFM', s=2500)
-
-# plot the components at MAP
-## 08/31/2021: save plots of what I got today...
-model2.plotChains('componentsMF', s=np.argmax(model2.chains['loglik']), 
-                  savepath = '../Aug31_realData_fixThres_MF_MAP.pdf') # --> THIS looks reasonable!!!!
-model2.plotChains('componentsFM', s=np.argmax(model2.chains['loglik']),
-                  savepath = '../Aug31_realData_fixThres_FM_MAP.pdf')
-
-# plot the "mean" and "std" of log-density on each surface
-model2.getMeanSurface(st=1000, en=len(model.chains['componentsMF']), thin=10, m=15, M=50, plot=True, 
-                      savepath='../Aug31_realData_fixThres_')
-
-#%%
-# save results
-
-import pickle as pkl
-
-#pkl.dump(model, file=open("Oct11_synData_3surfaceDP_3000iters.pkl",'wb')) 
-
-pkl.dump(model, file=open("Oct26_synData_3surfaceDP_Kmax2_3000iters.pkl",'wb'))
-
-pkl.dump(model, file=open("Oct26_synData_3surfaceDP_Kmax2_muD0.5_3000iters.pkl",'wb'))
-
-# if fix muD = 0.5, muNegD = -0.5, it works kind of fine (both surface stable)
-#model2 = pkl.load(open("Oct26_synData_3surfaceDP_Kmax2_muD0.5_3000iters.pkl",'rb'))
-
-pkl.dump(model, file=open("Oct28_synData_3surfaceDP_Kmax8_muDrestrict_3000iters.pkl",'wb'))
-
-# 01/09/2021: save the fixing threshold version
-pkl.dump(model2, file=open('Jan09_synData_fixThres_3surfaceDP_3000iters.pkl', 'wb'))
-
-#%%
-
-# 08/31/2021: save results from [real data] experiments
-import pickle as pkl
-
-# with FIXED allocation.....
-pkl.dump(model2, file=open('Aug31_realData_fixThres_3000iters.pkl', 'wb'))
-
-## save another try...
-pkl.dump(model2, file=open('Aug31_realData_fixThres_3000iters_try2.pkl', 'wb'))
-
-# with D centers fixed (but not point allocation)
-## D centers = +- 0.8
-pkl.dump(model, file=open('Aug31_realData_D0.8_2000iters.pkl', 'wb'))
-
-## D centers = +- 1.0
-pkl.dump(model, file=open('Aug31_realData_D1.0_2000iters.pkl', 'wb'))
-
-## 09/15/2021 save another one
-## D centers = -1.5, +1.8
-pkl.dump(model, file=open('Sep15_realData_D1.51.8_2000iters.pkl', 'wb'))
+pkl.dump(model.chains['weightMF'], file = open("weightMF_"+str(array_id)+".pkl","wb"))
+pkl.dump(model.chains['C'], file = open("C_"+str(array_id)+".pkl","wb"))
 
 
 
 #%%
 
-# a new function to get surface estimate density function at specified grid points
-def getGridDensity(chains, surface, which, lb=15.5, ub=49.5, num = 35, log=False,
-                   st = 1000, thin = 10):
-    '''
-    chains: the chains object of a "model"
-    surface: which surface to get (‘0’, ‘MF’, or ‘FM’)
-    which: ['map', 'mean', s] where s is the # iteration  (map = Max. Posterior)
-    
-    log: if on the log scale
-    st: the starting index for "mean"
-    thin: thinning param for "mean"
-    
-    return: a matrix of density values evaluated at (x,y)'s
-    
-    '''
-    
-    # mapping of surface label and name
-    surfs = {0: '0', 1: 'MF', 2: 'FM'}
-        
-    # point grids
-    x = np.linspace(lb, ub, num)
-    y = np.linspace(lb, ub, num)
-    X, Y = np.meshgrid(x, y)
-    XX = np.array([X.ravel(), Y.ravel()]).T
-            
-    # density calculation function (adapted from the model methods)
-    def calDensity(s):
-        '''
-        get the surface density (in log) at iteration s, for type which(=0,1,2)
-        '''
-        weights = chains['weight'+surface][s]
-        components = chains['components'+surface][s]
-            
-        Z = evalDensity(XX, weights, components, log=log)
-        Z = Z.reshape(X.shape) # this reshapes Z to the wide matrix shape
-            
-        return Z
-    
-    if which == 'map':
-        # get MAP estimate
-        s = np.argmax(chains['loglik'])
-        return calDensity(s)
-    elif which == 'mean':
-        # get the mean density
-        en = len(chains['C'])
-        for s in range(st,en,thin):
-            Z = calDensity(s)
-            if s == st:
-                dens = Z
-            else:
-                dens = np.concatenate((dens, Z), axis=0)
-        # change shape       
-        dens = dens.reshape(len(range(st,en,thin)),Z.shape[0],Z.shape[1])
-        
-        # get mean and variance
-        dens_mean = np.apply_along_axis(np.mean, 0, dens)
-        #dens_sd = np.apply_along_axis(np.std, 0, dens)
-        return dens_mean
-    else:
-        # get a specific iter
-        assert type(which) == int
-        return calDensity(which)
-        
-
-
-#%%
-# get density evaluations at grid points (midpoints of each age band)
-        
-# 1. get this for fixed allocation first
-        
-## (1) MAP 
-Z_MF = getGridDensity(model2.chains, 'MF', 'map')
-np.savetxt('../MF_surface_midpoints_MAP_fixAlloc.txt', Z_MF)
-
-Z_FM = getGridDensity(model2.chains, 'FM', 'map')
-np.savetxt('../FM_surface_midpoints_MAP_fixAlloc.txt', Z_FM)
-
-## (2) Mean surface
-Z_MF = getGridDensity(model2.chains, 'MF', 'mean')
-np.savetxt('../MF_surface_midpoints_mean_fixAlloc.txt', Z_MF)
-
-Z_FM = getGridDensity(model2.chains, 'FM', 'mean')
-np.savetxt('../FM_surface_midpoints_mean_fixAlloc.txt', Z_FM)
+#plotProps(model.chains['C'][1000:], savepath='props_MFFM_equal.pdf')
+#plotWeights(model.chains['weightMF'], savepath='younger_older_men_more_old.pdf')
