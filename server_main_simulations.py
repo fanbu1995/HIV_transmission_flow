@@ -10,6 +10,10 @@ Created on Mon Apr  5 23:15:38 2021
 
 # 04/23/2021: modified to run 100-round simulations on server
 
+# 01/11/2022: run more experiments with diff. sample size
+# ---- does more data improve inference precision??
+
+
 
 
 #%%
@@ -778,13 +782,28 @@ Pr = {"gammaScore": {'nu0': 2, 'sigma0': 1},
       "alpha": {'a': 4.0, 'b': 1.0}} 
     
 
+# 01/11/2022 change number of total events in data as well
+# to see if precision improves with more data
 # the total number of "events" in data
-N = 400
+      
+if seed <= 200:
+    N = 100
+elif seed <= 400:
+    N = 200
+elif seed <= 600:
+    N = 600
+else:
+    N = 800
 
-if seed <= 100:
+if (seed % 200 >= 1) and (seed % 200 <= 100):
     
     # V1: equal portion of MF and FM, LESS transmission from younger men (~25) than older men (~35)
-    Settings = {'N_MF': 150, 'N_FM': 150,
+    ## 3/4 true events; 50-50 FM-MF
+    ver = 'v1'
+    N_non = N//4
+    N_MF = (N - N_non)//2
+    N_FM = N_MF
+    Settings = {'N_MF': N_MF, 'N_FM': N_FM,
                 'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
                 'gammaL': 1, 'gammaD': 1, 
                 'weightMF': np.array([0.6, 0.3, 0.05, 0.05, 0]), 
@@ -796,6 +815,11 @@ if seed <= 100:
 else:
     
     # V2: 60-40 MF and FM, MORE transmissions from youner men (~25) than older men (~35)
+    ## 3/4 true events; 60-40 MF-FM
+    ver = 'v2'
+    N_non = N//4
+    N_MF = int((N - N_non) * 0.6)
+    N_FM = int((N - N_non) * 0.4)
     Settings = {'N_MF': 180, 'N_FM': 120,
                  'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
                  'gammaL': 1, 'gammaD': 1, 
@@ -871,10 +895,15 @@ model.fit(E, L, D, samples=1500, burn=500, random_seed = seed, debugHack=False)
 #%%
 
 # save things to pickle
-pkl.dump(model, file=open("model_"+str(array_id)+".pkl",'wb'))
 
-pkl.dump(model.chains['weightMF'], file = open("weightMF_"+str(array_id)+".pkl","wb"))
-pkl.dump(model.chains['C'], file = open("C_"+str(array_id)+".pkl","wb"))
+# 01/11/2022: update file names as well
+
+flabel = str(array_id)+'_'+str(N)+'_'+ver
+
+pkl.dump(model, file=open("model_"+flabel+".pkl",'wb'))
+
+pkl.dump(model.chains['weightMF'], file = open("weightMF_"+flabel+".pkl","wb"))
+pkl.dump(model.chains['C'], file = open("C_"+flabel+".pkl","wb"))
 
 
 
