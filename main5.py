@@ -286,12 +286,12 @@ class LatentPoissonDPHGMM:
             
             ## 09/15/2021 update
             ## fix muD and muNegD if D_centers are specified
-            if D_centers != None:
+            if D_centers is not None:
                 self.muD, self.muNegD = D_centers
                 
         ## 09/15/2021
         ## combine indsMF & indsFM with def_MF & def_FM
-        if def_MF != None & def_FM != None:
+        if def_MF is not None and def_FM is not None:
             self.indsMF = list(set(self.indsMF) | set(def_MF))
             self.indsFM = list(set(self.indsFM) | set(def_FM))            
             
@@ -377,7 +377,7 @@ class LatentPoissonDPHGMM:
             else:
                 # 09/15/2021 udpate
                 # fix the two centers for the D scores if specified
-                fix = (D_centers != None)
+                fix = (D_centers is not None)
                 self.muD, self.muNegD, self.gammaD = updateDModel(self.D, self.indsMF, self.indsFM, 
                                                                   self.muD, self.muNegD, 
                                                                   self.gammaD, self.GammaDPrior,
@@ -413,12 +413,12 @@ class LatentPoissonDPHGMM:
                 ## 2.1.A make adjustments (allocate all definitive points to their surfaces now)
                 ## 09/15/2021
                 # make sure def_MF and def_FM pairs are included in indsMF and indsFM
-                if def_MF != None & def_FM != None:
+                if def_MF is not None and def_FM is not None:
                     self.C[def_MF] = 1
                     self.C[def_FM] = 2
                     
                 ## 09/20/2021 adjustment
-                if potFM != None and potFM != None:
+                if potFM is not None and potFM is not None:
                     not0 = set(np.nonzero(self.C)[0])
                     # assign D = 0 and surface not 0 pairs to FM surface
                     this_FM = list(not0 & set(self.potFM))
@@ -709,7 +709,7 @@ class LatentPoissonDPHGMM:
             # go through the selected iterations and accumulate
             for s in range(st,en,thin):
                 Z = calDensity(s,c)
-                if s== st:
+                if s == st:
                     dens_c = Z
                 else:
                     dens_c = np.concatenate((dens_c, Z), axis=0)
@@ -754,8 +754,15 @@ class LatentPoissonDPHGMM:
 # 08/31/2021
 # try real Rakai data: 
 
+#import pandas as pd
+#dat = pd.read_csv('../Rakai_data.csv')
+
+#%%
+
+# 01/12/2022
+# real Rakai data again (with updated info)
 import pandas as pd
-dat = pd.read_csv('../Rakai_data.csv')
+dat = pd.read_csv('../Rakai_data_Jan2022.csv')
 
 #%%
 # 10/26/2020 fix:
@@ -869,6 +876,25 @@ plt.show()
     
 #%%
 
+# the prior (shared between fixed and non-fixed allocation inference)
+
+Pr = {"gammaL": {'nu0': 2, 'sigma0': 1}, # the previous default prior setting for score gamma's
+      "gammaD": {'nu0': 2, 'sigma0': 1}, # trying this first (to shrink the mixture spread...)
+      "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001,
+                'covariance': np.eye(2)*10000},
+      "precisionGMM": {'df': 2, 'invScale': np.eye(2), 'Scale': np.eye(2)},
+      #"weight": np.ones(K), 
+      "probs": np.ones(3),
+      "gammaPP": {'n0': 1, 'b0': 0.02},
+      #"alpha": {'a': 2.0, 'b':3.0}}   
+      # 10/26/2020: try a prior for alpha to encourage less shrinkage (large alpha)
+      "alpha": {'a': 4.0, 'b': 1.0}} 
+
+
+
+
+#%%
+
 
 # 01/09/2021: try with fixed muD and muNegD (NOT fixed point allocation)
 
@@ -883,18 +909,6 @@ plt.show()
 ## I can make the gammaD prior REALLY strong, but that will squash away the 0 surface completely...
 ## if it's not ridiculously strong, then pretty much same as before (MF surface vanishes)
 
-Pr = {"gammaL": {'nu0': 2, 'sigma0': 1}, # the previous default prior setting for score gamma's
-      "gammaD": {'nu0': 2, 'sigma0': 1}, # trying this first (to shrink the mixture spread...)
-      "muGMM": {'mean': np.array([0,0]), 'precision': np.eye(2)*.0001,
-                'covariance': np.eye(2)*10000},
-      "precisionGMM": {'df': 2, 'invScale': np.eye(2), 'Scale': np.eye(2)},
-      #"weight": np.ones(K), 
-      "probs": np.ones(3),
-      "gammaPP": {'n0': 1, 'b0': 0.02},
-      #"alpha": {'a': 2.0, 'b':3.0}}   
-      # 10/26/2020: try a prior for alpha to encourage less shrinkage (large alpha)
-      "alpha": {'a': 4.0, 'b': 1.0}} 
-
 model = LatentPoissonDPHGMM(Priors = Pr, K=3, Kmax = 8)
 
 # try a Kmax=2 version
@@ -903,8 +917,12 @@ model = LatentPoissonDPHGMM(Priors = Pr, K=3, Kmax = 8)
 # 09/15/2021: try new trick , start with few iters
 # 09/20/2021: adjustment with slight argument change in fit function
 
+# 01/12/2022: try re-run with new data (D = +- 1.5)
+#             try another one with D =+- 1.0
+#             try anohter one with D = +- 1.8
+
 model.fit(E, L, D, samples=3000, burn=0, random_seed = 73, debugHack=False, 
-          D_centers = [1.5, -1.5], def_event_inds = [def_MF, def_FM], 
+          D_centers = [1.8, -1.8], def_event_inds = [def_MF, def_FM], 
           extreme_inds = [ext_L, ext_D], L_D_model_inds = [potMF, potFM, D_model_only])
 
 model.plotChains('N_MF')
@@ -949,6 +967,9 @@ model.getMeanSurface(st=1000, en=len(model.chains['loglik']),
 ##             also try a Kmax = 10 version
 
 ## 09/20/2021: re-run fixed alloc version with this adaptation
+
+## 01/12/2022: re-run fixed alloc version with new data (using previous settings first)
+
 model2 = LatentPoissonDPHGMM(Priors = Pr, K=3, Kmax = 8)
 
 # try a Kmax=2 version
@@ -985,7 +1006,7 @@ model2.plotChains('componentsFM', s=np.argmax(model2.chains['loglik'][burn:])+bu
 model2.plotChains('components0', s=np.argmax(model2.chains['loglik'][burn:])+burn)
 
 # plot the "mean" and "std" of log-density on each surface
-model2.getMeanSurface(st=1000, en=len(model.chains['componentsMF']), thin=10, m=15, M=50, plot=True)#, 
+model2.getMeanSurface(st=1000, en=len(model2.chains['componentsMF']), thin=10, m=15, M=50, plot=True)#, 
                       #savepath='../Aug31_realData_fixThres_')
 
 #%%
@@ -1022,6 +1043,9 @@ pkl.dump(model2, file=open('Aug31_realData_fixThres_3000iters_try2.pkl', 'wb'))
 # 09/20/2021: save today's version
 pkl.dump(model2, file=open('Sep20_realData_fixThres_3000iters.pkl', 'wb'))
 
+# 01/12/2022: save re-run with fixed alloc
+pkl.dump(model2, file=open('Jan12_realData_fixThres_3000iters.pkl', 'wb'))
+
 # with D centers fixed (but not point allocation)
 ## D centers = +- 0.8
 pkl.dump(model, file=open('Aug31_realData_D0.8_2000iters.pkl', 'wb'))
@@ -1040,6 +1064,12 @@ pkl.dump(model, file=open('Sep20_realData_specTreat_D1.6-1.4_2500iters.pkl', 'wb
 
 ## another one
 pkl.dump(model, file=open('Sep20_realData_specTreat_D1.5_3000iters.pkl', 'wb'))
+
+## 01/12/2022: save D centers = +- 1.5 case
+pkl.dump(model, file=open('Jan12_realData_specTreat_D1.5_3000iters.pkl', 'wb'))
+
+## also save D = +- 1.8 case even if it's not that good
+pkl.dump(model, file=open('Jan12_realData_specTreat_D1.8_3000iters.pkl', 'wb'))
 
 
 

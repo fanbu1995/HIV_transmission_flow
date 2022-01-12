@@ -30,7 +30,11 @@ from copy import copy#, deepcopy
 import matplotlib.pyplot as plt
 
 #%%
+# the updated utils function for real data analysis
 from utilsHupdate import *
+
+# import from the previous version of utils functions for simulations...
+#from utilsHupdatePrev import *
 
 
 ## 01/09/2021: a version with 3 separate surfaces (separate components and weights)
@@ -686,7 +690,9 @@ class LatentPoissonDPHGMM:
 # setup for simulation experiments
 import pickle as pkl
 
-os.chdir('/hpc/home/fb75/trans_flow/')
+import sys
+
+os.chdir('/hpc/home/fb75/trans_flow_v3/')
 
 array_id = sys.argv[1]
 
@@ -820,7 +826,7 @@ else:
     N_non = N//4
     N_MF = int((N - N_non) * 0.6)
     N_FM = int((N - N_non) * 0.4)
-    Settings = {'N_MF': 180, 'N_FM': 120,
+    Settings = {'N_MF': N_MF, 'N_FM': N_FM,
                  'muL': 2, 'muD': 1.5, 'muNegD': -1.5, 
                  'gammaL': 1, 'gammaD': 1, 
                  'weightMF': np.array([0.3, 0.6, 0.05, 0.05, 0]), 

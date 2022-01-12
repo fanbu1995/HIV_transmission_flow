@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 
 import numpy as np
 
-#import pandas as pd
+import pandas as pd
 from copy import copy
 
 # 10/11/2020 update
@@ -82,11 +82,77 @@ def poolWeights(res_dir, nums, last=500, savepath=None):
     
     return
 
+
 #%%
     
 poolWeights('trans_flow/', list(range(1,101)), savepath='weightsMF_less_youner_men.pdf')
 
 poolWeights('trans_flow/', list(range(101,201)), savepath='weightsMF_more_youner_men.pdf')
+
+
+#%%
+# 01/12/2022:
+# function to pool weights and save to csv file
+
+from os.path import exists
+
+## helper function: get pop size N and scenario version 
+def N_ver(n):
+    if n <= 200:
+        N = 100
+    elif n <= 400:
+        N = 200
+    elif n <= 600:
+        N = 600
+    else:
+        N = 800
+        
+    if (n % 200 >= 1) and (n % 200 <= 100):
+        ver = 1
+    else:
+        ver = 2
+        
+    return N, ver
+
+def savePoolWeights(res_dir, nums, last=500, savepath=None):
+    weight_means = np.zeros((len(nums), 2))
+    N_ls = []
+    v_ls = []
+    
+    for i in range(len(nums)):
+        n = nums[i]
+        N, ver = N_ver(n)
+        flabel = str(n)+'_'+str(N)+'_v'+str(ver)
+        fpath = res_dir + 'weightMF_'+flabel+'.pkl'
+        if exists(fpath):
+            # if results are returned for this one
+            W = pkl.load(file=open(fpath,'rb'))
+            chain = np.array(W[-last:])[:,:2]
+            w_means = np.mean(chain, axis=0)
+            if ver == 1:
+                # weight on younger men on left side
+                w_means = w_means[::-1]
+        else:
+            # if no results are returned
+            # fill with 0s...
+            w_means = np.array((0.0,0.0))
+            
+        weight_means[i,:] = w_means
+        
+        N_ls.append(N)
+        v_ls.append(ver)
+    
+    dat_dic = {'N': N_ls, 'scenario': v_ls, 
+               'younger_weight': weight_means[:,0], 
+               'older_weight': weight_means[:,1]}    
+    
+    return pd.DataFrame(dat_dic)
+        
+#%%
+pool_weights =  savePoolWeights('trans_flow_v3/', list(range(1,801)))   
+
+# save to csv for use in R
+pool_weights.to_csv('pooled_weights.csv', index=False, index_label=False)
 
 
 #%%
@@ -147,6 +213,59 @@ def poolCs(res_dir, nums, last=500, savepath=None):
 poolCs('trans_flow/', list(range(1,101)), savepath='props_trans_events_equal.pdf')
 
 poolCs('trans_flow/', list(range(101,201)), savepath='props_trans_events_moreMF.pdf')
+
+#%%
+# 01/12/2022: function to save pooled Cs
+def savePoolCs(res_dir, nums, last=500, savepath=None):
+    
+    def tabulate(C):
+        counts = np.empty(shape=2)
+        for k in range(1,3):
+            counts[k-1] = np.sum(C==k)/np.sum(C!=0)
+        return counts
+    
+    C_means = np.zeros((len(nums), 2))
+    N_ls = []
+    v_ls = []
+    
+    for i in range(len(nums)):
+        n = nums[i]
+        N, ver = N_ver(n)
+        flabel = str(n)+'_'+str(N)+'_v'+str(ver)
+        fpath = res_dir + 'C_'+flabel+'.pkl'
+        
+        if exists(fpath):
+            # if results are returned
+            try:
+                Cs = pkl.load(file=open(fpath,'rb'))[-last:]
+                all_counts = np.apply_along_axis(tabulate, 1, Cs)
+                Counts_mean = np.mean(all_counts,axis=0)
+            except:
+                print('Something went wrong when unpickling', fpath)
+                # fill in zero for weird stuff as well
+                Counts_mean = np.array((0.0, 0.0))
+            
+        else:
+            # if no results are returned
+            # fill in with zeros
+            Counts_mean = np.array((0.0, 0.0))
+        
+        C_means[i,:] = Counts_mean
+        N_ls.append(N)
+        v_ls.append(ver)
+    
+    dat_dic = {'N': N_ls, 'scenario': v_ls, 
+               'MF_C': C_means[:,0], 
+               'FM_C': C_means[:,1]}    
+    
+    return pd.DataFrame(dat_dic)
+
+#%%
+# 01/12/2022: pool and save
+pool_Cs =  savePoolCs('trans_flow_v3/', list(range(1,801)))   
+
+# save to csv for use in R
+pool_Cs.to_csv('pooled_Cs.csv', index=False, index_label=False)
 
 #%%
 def plotProps(Cs, savepath=None):
