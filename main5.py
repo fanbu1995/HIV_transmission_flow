@@ -1176,3 +1176,108 @@ np.savetxt('../MF_surface_midpoints_mean_specTreat2.txt', Z_MF)
 Z_FM = getGridDensity(model.chains, 'FM', 'mean', st=1000)
 np.savetxt('../FM_surface_midpoints_mean_specTreat2.txt', Z_FM)
 
+
+#%%
+
+# 01/12/2022:
+# another new function to get aggregated density/frequency of transmitters
+# for a particular recipient age group
+# Note: need to keep the samples & mean and map as well
+# default: male transmitter & female recipient
+
+from scipy.stats.contingency import margins
+
+def getTransFreq(chains, surface, 
+                 rec_age = [15, 24],
+                 sc_age = [15.5, 49.5, 35],
+                 log=False,
+                 st = 1000, thin = 10):
+    '''
+    chains: the chains object of a "model"
+    surface: which surface to get (‘0’, ‘MF’, or ‘FM’)
+    rec_age: [lb, ub] for recipient gender age bounds
+    sr_age: [lb, ub, num] for transmitter gender age bounds and num of eval points
+    log: if on the log scale
+    st: the starting index for "mean"
+    thin: thinning param for "mean"
+    
+    return: a matrix of density values evaluated at (x,y)'s
+    
+    '''
+    
+    # mapping of surface label and name
+    surfs = {0: '0', 1: 'MF', 2: 'FM'}
+        
+    # point grids
+    x = np.linspace(sc_age[0], sc_age[1], sc_age[2]) # source age
+    y = np.linspace(rec_age[0], rec_age[1], num = 31)   # recipient age; default 31 grid points
+    X, Y = np.meshgrid(x, y)
+    XX = np.array([X.ravel(), Y.ravel()]).T
+            
+    # density calculation function (adapted from the model methods)
+    def calDensity(s):
+        '''
+        get the surface density (in log or not) at iteration s, for type which(=0,1,2)
+        '''
+        weights = chains['weight'+surface][s]
+        components = chains['components'+surface][s]
+            
+        Z = evalDensity(XX, weights, components, log=log)
+        Z = Z.reshape(X.shape) # this reshapes Z to the wide matrix shape
+            
+        return Z
+    
+    # get map estimate first
+    smap = np.argmax(chains['loglik'])
+    dens_map = calDensity(smap)
+    
+    # then iterate through
+    # get marginal dens for source age as well as the mean dens
+    en = len(chains['C'])
+    for s in range(st,en,thin):
+        Z = calDensity(s)
+        # get the marginal dens for source age as well
+        _, ymar = margins(Z)
+        if s == st:
+            dens = Z
+            sc_dens = ymar
+        else:
+            dens = np.concatenate((dens, Z), axis=0)
+            sc_dens = np.concatenate((sc_dens, ymar), axis=0) # each row is one sample of the marginal
+        
+    # change shape  
+    dens = dens.reshape(len(range(st,en,thin)),Z.shape[0],Z.shape[1])
+    # get mean
+    dens_mean = np.apply_along_axis(np.mean, 0, dens)
+    #dens_sd = np.apply_along_axis(np.std, 0, dens)
+    
+    # manipulate sc_dens into a data frame
+    ## normalize each row to sum to 1 first
+    sc_dens_norm = np.apply_along_axis(lambda x: x/np.sum(x), 0, sc_dens)
+    ## vectorize it
+    sc_dens_vec = sc_dens_norm.reshape((sc_dens_norm.size,))
+    ## create a data frame
+    dat_dic = {'freq': sc_dens_vec,
+               'monte_carlo_id': [i for i in range(1, sc_dens.shape[0]+1) for j in range(sc_age[2])],
+               'sc_age': np.tile(x, sc_dens.shape[0]),
+               'direction': surface,
+               'rec_age_lb': rec_age[0],
+               'rec_age_ub': rec_age[1]}
+    sc_dens_dat = pd.DataFrame(dat_dic)
+
+    # return everything
+    return sc_dens_dat, dens_mean, dens_map
+        
+
+#%%
+# try it now
+    
+# 1. male transmitter age freq. for female recipients between 15 and 24
+
+# with non-fixed allocation:
+sc_dens_MF, _, _ = getTransFreq(model.chains, 'MF', rec_age = [15,18]) # Try a narrow interval of ages
+sc_dens_MF.to_csv('MF_sc_dens_young_women.csv', index=False, index_label=False)
+
+# with fixed allocation
+sc_dens_MF2, _, _ = getTransFreq(model2.chains, 'MF', rec_age = [15,18])
+sc_dens_MF2.to_csv('MF_sc_dens_young_women_fixedAlloc.csv', index=False, index_label=False)
