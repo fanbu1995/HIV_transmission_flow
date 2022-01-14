@@ -944,9 +944,11 @@ model.plotChains('C', s=1500)
 #model.plotChains('componentsFM', s=1000)
 
 # plot the components at MAP
-model.plotChains('componentsMF', s=np.argmax(model.chains['loglik']))
-model.plotChains('componentsFM', s=np.argmax(model.chains['loglik']))
-model.plotChains('components0', s=np.argmax(model.chains['loglik']))
+## try some diff burn-in options to see what result 
+burn = 2000
+model.plotChains('componentsMF', s=np.argmax(model.chains['loglik'][burn:])+burn)
+model.plotChains('componentsFM', s=np.argmax(model.chains['loglik'][burn:])+burn)
+model.plotChains('components0', s=np.argmax(model.chains['loglik'][burn:])+burn)
 
 # plot the "mean" and "std" of log-density on each surface
 #model.getMeanSurface(st=500, en=3000, thin=10, m=15, M=50, plot=True, savepath=None)
@@ -1272,12 +1274,123 @@ def getTransFreq(chains, surface,
 #%%
 # try it now
     
-# 1. male transmitter age freq. for female recipients between 15 and 24
+# 1. male transmitter age freq. for female recipients between some age bounds
 
 # with non-fixed allocation:
-sc_dens_MF, _, _ = getTransFreq(model.chains, 'MF', rec_age = [15,18]) # Try a narrow interval of ages
+sc_dens_MF, _, _ = getTransFreq(model.chains, 'MF', rec_age = [24,26]) # Try a narrow interval of ages
 sc_dens_MF.to_csv('MF_sc_dens_young_women.csv', index=False, index_label=False)
 
 # with fixed allocation
-sc_dens_MF2, _, _ = getTransFreq(model2.chains, 'MF', rec_age = [15,18])
+sc_dens_MF2, _, _ = getTransFreq(model2.chains, 'MF', rec_age = [24,26])
 sc_dens_MF2.to_csv('MF_sc_dens_young_women_fixedAlloc.csv', index=False, index_label=False)
+
+# 2. female transmitter age as well
+sc_dens_FM, _, _ = getTransFreq(model.chains, 'FM', rec_age = [29,31]) # Try a narrow interval of ages
+sc_dens_FM.to_csv('FM_sc_dens_middle_men30.csv', index=False, index_label=False)
+
+sc_dens_FM2, _, _ = getTransFreq(model2.chains, 'FM', rec_age = [29,31]) # Try a narrow interval of ages
+sc_dens_FM2.to_csv('FM_sc_dens_middle_men30_fixedAlloc.csv', index=False, index_label=False)
+
+
+#%%
+# 01/31/2022
+# go through the C point allocations to identify points with a lot of type ambiguity
+
+## get indices that are not def FM or MF points
+N = 526
+amb_inds = [i for i in range(N) if i not in def_FM and i not in def_MF]
+
+def check_amb_points(chains, inds, st = 1000, en = 3000):
+    
+    tot_iter = en-st+1
+    Cs = chains['C'][st:en]
+    Carray = copy(np.array(Cs)[:, inds])
+    
+    Counts = np.apply_along_axis(lambda v: np.array([np.sum(v==k) for k in range(3)]),0, Carray)/tot_iter
+    
+    # turns out there are a lot of points that change their types back and forth 
+    # so 
+    check = np.apply_along_axis(lambda v: np.max(v[1:]) <= 0.7 and v[0] <= 0.1, 
+                                0, Counts)
+    amb_inds = [inds[i] for i in np.where(check)[0]]
+    
+    # also return the most frequenstly assigned type
+    most_type = np.apply_along_axis(np.argmax, 0, Counts)
+    
+    return Counts.T, amb_inds, most_type, check
+
+
+#%%
+Counts, amb_i, types, check = check_amb_points(model.chains, amb_inds)
+
+## check entropy of those frequencies
+from scipy.stats import entropy
+entros = np.apply_along_axis(entropy, 1, Counts)
+
+#thres = 0.8 # check for high entropy ones (more balanced proportions among three categories)
+## entropy([0.1,0.2,0.7]) = 0.802
+## entropy([0.1,0.3,0.6]) = 0.898
+## entropy([0.1,0.1,0.8]) = 0.639
+np.sum(entros > 0.9) # 41
+np.sum(entros > 0.8) # 77 (53 of them mainly assigned to true events)
+np.sum(entros > 0.6) # 189 points
+
+
+
+## check out those age pairs
+Ages = getPoints(E)
+Ages[amb_i,:]
+                            
+## plot those ambiguous points
+iis = amb_i
+#iis = [i for i in inds if i in np.where(entros > 0.9)[0]]
+
+within_inds = np.where(check)[0]
+within_inds = np.where(entros > 0.8)[0]
+
+
+to_see = 'most' # or 'fixed'
+to_see = 'fixed'
+
+if to_see == 'most':
+
+    ## check for mostly assigned category
+    i1 = [amb_inds[i] for i in within_inds if i in np.where(types==1)[0]]
+    i2 = [amb_inds[i] for i in within_inds if i in np.where(types==2)[0]]
+    i3 = [amb_inds[i] for i in within_inds if i in np.where(types==0)[0]]
+    
+    tit = 'most freq. type'
+else:
+
+    ## check for the fixed type category
+    i1 = [amb_inds[i] for i in within_inds if amb_inds[i] in np.where(D>0.5)[0] and amb_inds[i] in np.where(L>0.6)[0]]
+    i2 = [amb_inds[i] for i in within_inds if amb_inds[i] in np.where(D<0.5)[0] and amb_inds[i] in np.where(L>0.6)[0]]
+    i3 = [amb_inds[i] for i in within_inds if amb_inds[i] in np.where(L<=0.6)[0]]
+    
+    tit = 'fixed assign. type'
+ 
+if i3:
+    plt.plot(Ages[i3,0], Ages[i3,1], "o", color='gray', label='non-event')
+if i1:
+    plt.plot(Ages[i1,0], Ages[i1,1], "o", label='M->F')
+if i2:
+    plt.plot(Ages[i2,0], Ages[i2,1], "o", color='orange', label='F->M')
+
+plt.xlim([15, 50])
+plt.ylim([15, 50])
+plt.ylabel('female age')
+plt.xlabel('male age')
+plt.legend(loc='upper left', title = tit)
+plt.show()
+
+
+
+   
+                    
+                                 
+                                 
+    
+    
+    
+    
+    
