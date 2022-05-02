@@ -659,6 +659,7 @@ class LatentPoissonDPHGMM:
                 plt.plot(chain[:,h],"-",label=this_label)
             plt.legend(loc='upper right')
             plt.title('Traceplot of surface allocation probs')
+            plt.xlabel('Samples')
             if savepath is not None:
                 plt.savefig(savepath)
             plt.show()
@@ -921,8 +922,8 @@ model = LatentPoissonDPHGMM(Priors = Pr, K=3, Kmax = 8)
 #             try another one with D =+- 1.0
 #             try anohter one with D = +- 1.8
 
-model.fit(E, L, D, samples=3000, burn=0, random_seed = 73, debugHack=False, 
-          D_centers = [1.8, -1.8], def_event_inds = [def_MF, def_FM], 
+model.fit(E, L, D, samples=3000, burn=0, random_seed = 41, debugHack=False, 
+          D_centers = [1.5, -1.5], def_event_inds = [def_MF, def_FM], 
           extreme_inds = [ext_L, ext_D], L_D_model_inds = [potMF, potFM, D_model_only])
 
 model.plotChains('N_MF')
@@ -1002,7 +1003,7 @@ model2.plotChains('C', s=2500)
 # plot the components at MAP
 ## 08/31/2021: save plots of what I got today...
 ## 09/20/2021: add burn-in for the MAP estimates
-burn = 200
+burn = 1000
 model2.plotChains('componentsMF', s=np.argmax(model2.chains['loglik'][burn:])+burn) # --> THIS looks reasonable!!!!
 model2.plotChains('componentsFM', s=np.argmax(model2.chains['loglik'][burn:])+burn)
 model2.plotChains('components0', s=np.argmax(model2.chains['loglik'][burn:])+burn)
@@ -1072,6 +1073,10 @@ pkl.dump(model, file=open('Jan12_realData_specTreat_D1.5_3000iters.pkl', 'wb'))
 
 ## also save D = +- 1.8 case even if it's not that good
 pkl.dump(model, file=open('Jan12_realData_specTreat_D1.8_3000iters.pkl', 'wb'))
+
+## 01/15/2022
+## same another  D centers = +- 1.5 case (a different run)
+pkl.dump(model, file=open('Jan15_realData_specTreat_D1.5_3000iters.pkl', 'wb'))
 
 
 
@@ -1145,38 +1150,40 @@ def getGridDensity(chains, surface, which, lb=15.5, ub=49.5, num = 35, log=False
 #%%
 # get density evaluations at grid points (midpoints of each age band)
         
+## 01/15/2022: do this for the updated data analysis
+        
 # 1. get this for fixed allocation first
         
 ## (1) MAP 
 Z_MF = getGridDensity(model2.chains, 'MF', 'map')
-np.savetxt('../MF_surface_midpoints_MAP_fixAlloc.txt', Z_MF)
+np.savetxt('../MF_surface_midpoints_MAP_fixAlloc_Jan2022.txt', Z_MF)
 
 Z_FM = getGridDensity(model2.chains, 'FM', 'map')
-np.savetxt('../FM_surface_midpoints_MAP_fixAlloc.txt', Z_FM)
+np.savetxt('../FM_surface_midpoints_MAP_fixAlloc_Jan2022.txt', Z_FM)
 
 ## (2) Mean surface
 Z_MF = getGridDensity(model2.chains, 'MF', 'mean')
-np.savetxt('../MF_surface_midpoints_mean_fixAlloc.txt', Z_MF)
+np.savetxt('../MF_surface_midpoints_mean_fixAlloc_Jan2022.txt', Z_MF)
 
 Z_FM = getGridDensity(model2.chains, 'FM', 'mean')
-np.savetxt('../FM_surface_midpoints_mean_fixAlloc.txt', Z_FM)
+np.savetxt('../FM_surface_midpoints_mean_fixAlloc_Jan2022.txt', Z_FM)
 
 ## 09/16/2021
 # 2. get a version of semi-fixed alloc (spec. treat. D=[1.6,-1.4], also D=[1.5,-1.5])
 ## (1) get a particular iter result that I like
 s = np.argmax(model.chains['loglik'])
 Z_MF = getGridDensity(model.chains, 'MF', s)
-np.savetxt('../MF_surface_midpoints_MAP_specTreat2.txt', Z_MF)
+np.savetxt('../MF_surface_midpoints_MAP_specTreat_Jan2022.txt', Z_MF)
 
 Z_FM = getGridDensity(model.chains, 'FM', s)
-np.savetxt('../FM_surface_midpoints_MAP_specTreat2.txt', Z_FM)
+np.savetxt('../FM_surface_midpoints_MAP_specTreat_Jan2022.txt', Z_FM)
 
 ## (2) get the mean surfaces
 Z_MF = getGridDensity(model.chains, 'MF', 'mean', st=1000)
-np.savetxt('../MF_surface_midpoints_mean_specTreat2.txt', Z_MF)
+np.savetxt('../MF_surface_midpoints_mean_specTreat_Jan2022.txt', Z_MF)
 
 Z_FM = getGridDensity(model.chains, 'FM', 'mean', st=1000)
-np.savetxt('../FM_surface_midpoints_mean_specTreat2.txt', Z_FM)
+np.savetxt('../FM_surface_midpoints_mean_specTreat_Jan2022.txt', Z_FM)
 
 
 #%%

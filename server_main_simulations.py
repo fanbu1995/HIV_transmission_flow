@@ -14,6 +14,10 @@ Created on Mon Apr  5 23:15:38 2021
 # ---- does more data improve inference precision??
 
 
+# 01/27/2022: LOCAL RUN
+# massage code a little to get full MCMC samples for, e.g., N=600 and/or 800
+# CHANGED BACK afterwards...
+# BUT need to re-check before re-running on server
 
 
 #%%
@@ -31,10 +35,10 @@ import matplotlib.pyplot as plt
 
 #%%
 # the updated utils function for real data analysis
-from utilsHupdate import *
+#from utilsHupdate import *
 
 # import from the previous version of utils functions for simulations...
-#from utilsHupdatePrev import *
+from utilsHupdatePrev import *
 
 
 ## 01/09/2021: a version with 3 separate surfaces (separate components and weights)
@@ -600,6 +604,7 @@ class LatentPoissonDPHGMM:
                 this_label = str(h)
                 plt.plot(chain[:,h],"-",label=this_label)
             plt.legend(loc='upper right')
+            plt.xlabel('Samples')
             plt.title('Traceplot of surface allocation probs')
             if savepath is not None:
                 plt.savefig(savepath)
@@ -872,21 +877,26 @@ E, L, D = simulateLatentPoissonHGMM(N, Settings)
 
 # Inference
 
+# 01/27/2022: LOCAL RUN
+# to get 3000 iters traceplot
+
 model = LatentPoissonDPHGMM(Priors = Pr, K=3, Kmax = 10)
 
-model.fit(E, L, D, samples=1500, burn=500, random_seed = seed, debugHack=False)
+#model.fit(E, L, D, samples=1500, burn=500, random_seed = seed, debugHack=False)
+
+model.fit(E, L, D, samples=3000, burn=0, random_seed = seed, debugHack=False)
 
 #model.plotChains('N_MF')
 #model.plotChains('N_FM')
 #model.plotChains('muD')
 #model.plotChains('muNegD')
-##model.plotChains('weightMF')
-##model.plotChains('weightFM')
+model.plotChains('weightMF')
+#model.plotChains('weightFM')
 ##model.plotChains('weight0')
 #model.plotChains('muL')
 #model.plotChains('gammaD')
 #model.plotChains('gammaL')
-#model.plotChains('probs')
+model.plotChains('probs')
 #model.plotChains('alpha_MF')
 #
 #model.plotChains('C', s=500)
